@@ -13,3 +13,14 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: helm lint charts/traceroot
       - run: helm template traceroot charts/traceroot --set ingress.host=example.com > /dev/null
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest pyyaml
+      - run: pytest tests/ -v
