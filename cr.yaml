@@ -1,0 +1,6 @@
+# chart-releaser configuration.
+#
+# Default release names are "<chart>-<version>", which disambiguates repos that
+# hold several charts. This repo holds one, so use the plain v-prefixed tags the
+# rest of our repositories use.
+release-name-template: "v{{ .Version }}"

@@ -1,0 +1,26 @@
+TraceRoot is installing into namespace {{ .Release.Namespace }}.
+
+  helm status {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+{{- if .Values.ingress.enabled }}
+
+Reachable at:
+{{- if .Values.ingress.host }}
+  https://{{ .Values.ingress.host }}
+{{- else }}
+  the load balancer address from:
+    kubectl get ingress {{ include "traceroot.fullname" . }} -n {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.ingress.blockInternalRoutes }}
+
+{{ .Values.ingress.internalRoutePrefix }} is answered with 404 at the load balancer.
+Service-to-service callers reach it over cluster DNS instead.
+{{- end }}
+{{- else }}
+
+Ingress is disabled. Port-forward to reach the web service:
+  kubectl port-forward svc/{{ include "traceroot.fullname" . }}-web 3000:{{ .Values.web.port }} -n {{ .Release.Namespace }}
+{{- end }}
+
+Credentials are read from Kubernetes Secrets you provide; this chart never
+contains secret values.
