@@ -1,10 +1,17 @@
-# deploy/helm/Chart.yaml
 apiVersion: v2
 name: traceroot
 description: Observability and self-improving layer for AI agents
 type: application
 version: 1.0.0
 appVersion: "0.1.0"
+
+home: https://traceroot.ai
+sources:
+  - https://github.com/traceroot-ai/traceroot-k8s
+  - https://github.com/traceroot-ai/traceroot
+maintainers:
+  - name: TraceRoot.AI
+    url: https://github.com/traceroot-ai
 
 dependencies:
   - name: clickhouse
