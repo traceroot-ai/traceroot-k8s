@@ -1,0 +1,15 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint charts/traceroot
+      - run: helm template traceroot charts/traceroot --set ingress.host=example.com > /dev/null

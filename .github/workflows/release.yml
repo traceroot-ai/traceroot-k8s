@@ -1,0 +1,34 @@
+# Publishes the chart to the gh-pages branch, which GitHub Pages serves as a
+# Helm repository at https://traceroot-ai.github.io/traceroot-k8s.
+# traceroot-terraform-aws consumes it from there by pinned version.
+name: Release Chart
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - uses: azure/setup-helm@v4
+
+      - name: Package and publish
+        uses: helm/chart-releaser-action@v1
+        with:
+          charts_dir: charts
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
