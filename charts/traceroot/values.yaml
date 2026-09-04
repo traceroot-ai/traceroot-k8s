@@ -138,6 +138,17 @@ s3:
 # --- ClickHouse (Bitnami subchart) ---
 clickhouse:
   deploy: true
+  # Enabling sqlGateway additionally requires the admin user to hold access
+  # management, which the stock admin does not have. It is a subchart setting,
+  # so it cannot be switched on from sqlGateway.enabled and must be supplied:
+  #   usersExtraOverrides: |
+  #     <clickhouse>
+  #       <users>
+  #         <default><access_management>1</access_management></default>
+  #       </users>
+  #     </clickhouse>
+  # Left unset by default so an installation that does not serve the gateway
+  # keeps the narrower admin.
   image:
     repository: bitnamilegacy/clickhouse
   auth:
@@ -170,6 +181,42 @@ migrations:
     image:
       repository: ""
       tag: "latest"
+
+# --- Public SQL gateway (optional) ---
+# Provisions two dedicated ClickHouse identities: a writer that owns the curated
+# read-only views (they are created SQL SECURITY DEFINER, so the view body reads
+# the physical tables under the writer's privileges) and a least-privileged user
+# that customer SQL actually runs as, holding SELECT on the views only and
+# capped by a readonly settings profile.
+#
+# Off by default. Enabling creates database users and requires granting the
+# ClickHouse admin access management (see the clickhouse block below), neither of
+# which an installation that does not serve the gateway needs.
+sqlGateway:
+  enabled: false
+  # Also runs a hook after the migration that asserts the views carry the
+  # expected definer and that the read-only user is refused the physical tables.
+  verify: true
+  writerUser: sql_gateway_writer
+  readonlyUser: sql_gateway_ro
+  settingsProfile: sql_readonly_profile
+  # Keys read from clickhouse.auth.existingSecret. Supply them however the rest
+  # of that Secret is supplied; the chart never creates them.
+  secretKeys:
+    writerPassword: "clickhouse-writer-password"
+    readonlyPassword: "clickhouse-ro-password"
+  # Caps applied to the read-only profile, enforced by ClickHouse rather than by
+  # the application. CONST in the profile stops a caller raising them per query.
+  limits:
+    maxExecutionTime: 30
+    maxResultRows: 100000
+    maxResultBytes: 536870912
+    maxMemoryUsage: 4294967296
+  # Needs clickhouse-client only; defaults to the image the chart already
+  # deploys, so no extra registry or build is involved.
+  image:
+    repository: bitnamilegacy/clickhouse
+    tag: 25.2.1-debian-12-r0
 
 # --- Secrets (managed by Terraform) ---
 secrets:
