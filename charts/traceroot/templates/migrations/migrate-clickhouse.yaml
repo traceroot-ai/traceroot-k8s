@@ -17,6 +17,10 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 3
+  # before-hook-creation only clears the Job when a later release runs one, so an
+  # uninstalled or long-idle release would keep it forever. This bounds that: the
+  # log stays readable for a week, then Kubernetes collects the Job and its pod.
+  ttlSecondsAfterFinished: 604800
   template:
     metadata:
       labels:
