@@ -88,8 +88,13 @@ def test_successful_runs_are_not_deleted(name):
 @pytest.mark.parametrize("name", [_PROVISION, _MIGRATE, _VERIFY])
 def test_retention_is_bounded(name):
     """Retained Jobs need a TTL, or an uninstalled release keeps them forever."""
-    line = next(l for l in _template_text(name).splitlines() if "ttlSecondsAfterFinished" in l)
-    assert int(line.split(":")[1].strip()) > 0
+    text = _template_text(name)
+    assert "ttlSecondsAfterFinished" in text
+    assert ".Values.migrations.retainFinishedSeconds" in text, "should use the shared value"
+
+
+def test_retention_default_is_positive_and_tunable():
+    assert _values()["migrations"]["retainFinishedSeconds"] > 0
 
 
 def test_denial_probe_requires_access_denied():

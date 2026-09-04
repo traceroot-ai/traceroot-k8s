@@ -17,8 +17,10 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 2
-  # Retained after success, so bound it the way the migration job is.
-  ttlSecondsAfterFinished: 604800
+  # Retained after success; bounded by the same knob as the migration job.
+  {{- if not (kindIs "invalid" .Values.migrations.retainFinishedSeconds) }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.retainFinishedSeconds }}
+  {{- end }}
   template:
     metadata:
       labels:
