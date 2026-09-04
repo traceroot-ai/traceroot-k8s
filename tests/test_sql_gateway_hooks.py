@@ -85,6 +85,36 @@ def test_successful_runs_are_not_deleted(name):
     assert "before-hook-creation" in line, "needed to recreate an immutable Job"
 
 
+@pytest.mark.parametrize("name", [_PROVISION, _MIGRATE, _VERIFY])
+def test_retention_is_bounded(name):
+    """Retained Jobs need a TTL, or an uninstalled release keeps them forever."""
+    line = next(l for l in _template_text(name).splitlines() if "ttlSecondsAfterFinished" in l)
+    assert int(line.split(":")[1].strip()) > 0
+
+
+def test_denial_probe_requires_access_denied():
+    """A failed probe is not proof of denial -- a timeout fails too."""
+    text = _template_text(_VERIFY)
+    assert "ACCESS_DENIED" in text and "Code: 497" in text
+
+
+def test_passwords_are_not_embedded_as_sql_literals():
+    """A quote or backslash in a secret would otherwise alter the DDL."""
+    text = _template_text(_PROVISION)
+    assert "sha256_hash" in text
+    assert "sha256_password" not in text
+    for var in ("SQL_GATEWAY_WRITER_PASSWORD", "SQL_GATEWAY_RO_PASSWORD"):
+        assert "BY '${%s}'" % var not in text
+
+
+@pytest.mark.parametrize("name", [_PROVISION, _VERIFY])
+def test_client_commands_are_arrays(name):
+    """A string command re-splits a password containing whitespace or a glob."""
+    text = _template_text(name)
+    assert "[@]}\" --query" in text or '[@]}" --query' in text
+    assert '--password ${' not in text, "unquoted password interpolation"
+
+
 @pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
 class TestRendered:
     @staticmethod

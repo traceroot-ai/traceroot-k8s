@@ -212,8 +212,11 @@ sqlGateway:
     maxResultRows: 100000
     maxResultBytes: 536870912
     maxMemoryUsage: 4294967296
-  # Needs clickhouse-client only; defaults to the image the chart already
-  # deploys, so no extra registry or build is involved.
+  # Supplies clickhouse-client for the two hooks; no extra registry or build is
+  # involved. Same repository as the deployed server, but pinned independently,
+  # because clickhouse.image.tag is unset and the server's tag comes from the
+  # subchart default. Keep this in step with the server version when that moves —
+  # a client far ahead of or behind the server is the failure this pin guards.
   image:
     repository: bitnamilegacy/clickhouse
     tag: 25.2.1-debian-12-r0
