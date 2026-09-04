@@ -18,6 +18,8 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 6
+  # Retained after success, so bound it the way the migration job is.
+  ttlSecondsAfterFinished: 604800
   template:
     metadata:
       labels:
@@ -34,23 +36,33 @@ spec:
           args:
             - |
               set -euo pipefail
-              CH="clickhouse-client --host {{ include "traceroot.clickhouse.hostname" . }} --port 9000 --user {{ .Values.clickhouse.auth.username }} --password ${CLICKHOUSE_ADMIN_PASSWORD}"
+              # An array, not a string: a password containing whitespace or a glob
+              # character would otherwise be re-split by the shell before it ever
+              # reached the client, and authentication would fail for no visible reason.
+              CH=(clickhouse-client --host "{{ include "traceroot.clickhouse.hostname" . }}" --port 9000
+                  --user "{{ .Values.clickhouse.auth.username }}" --password "${CLICKHOUSE_ADMIN_PASSWORD}")
+
+              # Passwords are sent as their SHA-256 hash rather than as literals, so no
+              # quote or backslash in a secret can terminate or alter the surrounding
+              # DDL, and the raw value never appears in the statement at all.
+              WRITER_HASH=$(printf '%s' "${SQL_GATEWAY_WRITER_PASSWORD}" | sha256sum | cut -d' ' -f1)
+              RO_HASH=$(printf '%s' "${SQL_GATEWAY_RO_PASSWORD}" | sha256sum | cut -d' ' -f1)
 
               # This hook can fire before the ClickHouse pod is Ready.
               for i in $(seq 1 60); do
-                $CH --query "SELECT 1" >/dev/null 2>&1 && break
+                "${CH[@]}" --query "SELECT 1" >/dev/null 2>&1 && break
                 echo "waiting for clickhouse ($i/60)"; sleep 5
               done
 
               echo "--- clickhouse version ---"
-              $CH --query "SELECT version()"
+              "${CH[@]}" --query "SELECT version()"
 
               # Creating users requires access management, which the stock admin
               # does not carry unless clickhouse.usersExtraOverrides grants it.
               # Printed before the DDL so a permissions failure below is
               # immediately explicable from this log alone.
               echo "--- grants held by the admin running this job ---"
-              $CH --query "SHOW GRANTS"
+              "${CH[@]}" --query "SHOW GRANTS"
 
               # Idempotent and reconciling: CREATE ... IF NOT EXISTS leaves an
               # existing user on its old password, so each CREATE is followed by
@@ -60,11 +72,11 @@ spec:
               # curated views are accepted here even though the migration that
               # creates those views has not run yet.
               echo "--- provisioning identities ---"
-              $CH --multiquery --query "
+              "${CH[@]}" --multiquery --query "
                 CREATE USER IF NOT EXISTS {{ .Values.sqlGateway.writerUser }}
-                    IDENTIFIED WITH sha256_password BY '${SQL_GATEWAY_WRITER_PASSWORD}';
+                    IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';
                 ALTER USER {{ .Values.sqlGateway.writerUser }}
-                    IDENTIFIED WITH sha256_password BY '${SQL_GATEWAY_WRITER_PASSWORD}';
+                    IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';
                 GRANT SELECT ON default.spans  TO {{ .Values.sqlGateway.writerUser }};
                 GRANT SELECT ON default.traces TO {{ .Values.sqlGateway.writerUser }};
                 CREATE SETTINGS PROFILE IF NOT EXISTS {{ .Values.sqlGateway.settingsProfile }} SETTINGS
@@ -80,10 +92,10 @@ spec:
                     max_result_bytes = {{ .Values.sqlGateway.limits.maxResultBytes }} CONST,
                     max_memory_usage = {{ .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
                 CREATE USER IF NOT EXISTS {{ .Values.sqlGateway.readonlyUser }}
-                    IDENTIFIED WITH sha256_password BY '${SQL_GATEWAY_RO_PASSWORD}'
+                    IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
                     SETTINGS PROFILE '{{ .Values.sqlGateway.settingsProfile }}';
                 ALTER USER {{ .Values.sqlGateway.readonlyUser }}
-                    IDENTIFIED WITH sha256_password BY '${SQL_GATEWAY_RO_PASSWORD}'
+                    IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
                     SETTINGS PROFILE '{{ .Values.sqlGateway.settingsProfile }}';
                 GRANT SELECT ON default.spans_public_v1  TO {{ .Values.sqlGateway.readonlyUser }};
                 GRANT SELECT ON default.traces_public_v1 TO {{ .Values.sqlGateway.readonlyUser }};
@@ -92,9 +104,9 @@ spec:
               # ClickHouse redacts passwords in query_log, so echoing the
               # resulting grants leaks nothing and records what was applied.
               echo "--- grants: {{ .Values.sqlGateway.writerUser }} ---"
-              $CH --query "SHOW GRANTS FOR {{ .Values.sqlGateway.writerUser }}"
+              "${CH[@]}" --query "SHOW GRANTS FOR {{ .Values.sqlGateway.writerUser }}"
               echo "--- grants: {{ .Values.sqlGateway.readonlyUser }} ---"
-              $CH --query "SHOW GRANTS FOR {{ .Values.sqlGateway.readonlyUser }}"
+              "${CH[@]}" --query "SHOW GRANTS FOR {{ .Values.sqlGateway.readonlyUser }}"
               echo "provisioning complete"
           env:
             - name: CLICKHOUSE_ADMIN_PASSWORD

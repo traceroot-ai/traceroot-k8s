@@ -17,6 +17,8 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 2
+  # Retained after success, so bound it the way the migration job is.
+  ttlSecondsAfterFinished: 604800
   template:
     metadata:
       labels:
@@ -34,19 +36,23 @@ spec:
             - |
               set -euo pipefail
               HOST="{{ include "traceroot.clickhouse.hostname" . }}"
-              CH_ADMIN="clickhouse-client --host $HOST --port 9000 --user {{ .Values.clickhouse.auth.username }} --password ${CLICKHOUSE_ADMIN_PASSWORD}"
-              CH_RO="clickhouse-client --host $HOST --port 9000 --user {{ .Values.sqlGateway.readonlyUser }} --password ${SQL_GATEWAY_RO_PASSWORD}"
+              # Arrays, not strings: a password containing whitespace or a glob would
+              # otherwise be re-split by the shell before reaching the client.
+              CH_ADMIN=(clickhouse-client --host "$HOST" --port 9000
+                        --user "{{ .Values.clickhouse.auth.username }}" --password "${CLICKHOUSE_ADMIN_PASSWORD}")
+              CH_RO=(clickhouse-client --host "$HOST" --port 9000 --user "{{ .Values.sqlGateway.readonlyUser }}"
+                     --password "${SQL_GATEWAY_RO_PASSWORD}" --max_execution_time 30)
               FAILED=0
 
               echo "--- clickhouse version ---"
-              $CH_ADMIN --query "SELECT version()"
+              "${CH_ADMIN[@]}" --query "SELECT version()"
 
               # The definer is what lets the read-only user read the views
               # without holding any grant on the tables underneath. If a view
               # were created without it, isolation would rest on nothing.
               for VIEW in spans_public_v1 traces_public_v1; do
                 echo "--- definer: $VIEW ---"
-                DDL="$($CH_ADMIN --query "SHOW CREATE VIEW default.$VIEW")"
+                DDL="$("${CH_ADMIN[@]}" --query "SHOW CREATE VIEW default.$VIEW")"
                 echo "$DDL"
                 if echo "$DDL" | grep -q "DEFINER = {{ .Values.sqlGateway.writerUser }}"; then
                   echo "OK: $VIEW is owned by {{ .Values.sqlGateway.writerUser }}"
@@ -58,21 +64,27 @@ spec:
               # The curated views must stay readable by the gateway user.
               for VIEW in spans_public_v1 traces_public_v1; do
                 echo "--- read-only user reads $VIEW ---"
-                if $CH_RO --query "SELECT count() FROM default.$VIEW(project_id = 'helm-verification-probe')" >/dev/null 2>&1; then
+                if "${CH_RO[@]}" --query "SELECT count() FROM default.$VIEW(project_id = 'helm-verification-probe')" >/dev/null 2>&1; then
                   echo "OK: {{ .Values.sqlGateway.readonlyUser }} can read $VIEW"
                 else
                   echo "FAIL: {{ .Values.sqlGateway.readonlyUser }} cannot read $VIEW"; FAILED=1
                 fi
               done
 
-              # And must never reach the physical tables. ClickHouse answers
-              # these with ACCESS_DENIED (code 497).
+              # And must never reach the physical tables. Denial has to be proven, not
+              # inferred from failure: a timeout, a bad password or an unreachable host
+              # all fail too, and treating those as success would let this pass without
+              # ever testing anything. Only ClickHouse's ACCESS_DENIED (code 497) counts.
+              # LIMIT 0 keeps the probe from scanning a large table when access is open.
               for TABLE in spans traces; do
                 echo "--- read-only user is denied default.$TABLE ---"
-                if $CH_RO --query "SELECT count() FROM default.$TABLE" >/dev/null 2>&1; then
+                if ERR=$("${CH_RO[@]}" --query "SELECT * FROM default.$TABLE LIMIT 0" 2>&1); then
                   echo "FAIL: {{ .Values.sqlGateway.readonlyUser }} can read default.$TABLE"; FAILED=1
+                elif printf '%s' "$ERR" | grep -qE 'ACCESS_DENIED|Code: 497'; then
+                  echo "OK: {{ .Values.sqlGateway.readonlyUser }} denied default.$TABLE (ACCESS_DENIED)"
                 else
-                  echo "OK: {{ .Values.sqlGateway.readonlyUser }} denied default.$TABLE"
+                  echo "FAIL: probe of default.$TABLE did not return ACCESS_DENIED; denial unproven:"
+                  printf '%s\n' "$ERR"; FAILED=1
                 fi
               done
 
