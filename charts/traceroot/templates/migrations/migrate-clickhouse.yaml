@@ -7,7 +7,14 @@ metadata:
   annotations:
     "helm.sh/hook": post-install,pre-upgrade
     "helm.sh/hook-weight": "0"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    # Deliberately not hook-succeeded. Only before-hook-creation is needed to
+    # recreate this Job on the next release (a Job's spec.template is immutable,
+    # so the stale object has to go first); hook-succeeded is housekeeping, and
+    # it deletes the Job and its pod the moment the run succeeds, taking the
+    # goose output with it. A failed hook is retained either way. Keeping the
+    # successful run means the record of which migrations applied survives for
+    # anyone with read-only cluster access, who cannot query ClickHouse directly.
+    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 3
   template:
@@ -25,7 +32,13 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              goose -dir /migrations clickhouse "clickhouse://{{ .Values.clickhouse.auth.username }}:${CLICKHOUSE_PASSWORD}@{{ include "traceroot.clickhouse.hostname" . }}:9000/default" up
+              set -e
+              DSN="clickhouse://{{ .Values.clickhouse.auth.username }}:${CLICKHOUSE_PASSWORD}@{{ include "traceroot.clickhouse.hostname" . }}:9000/default"
+              goose -dir /migrations clickhouse "$DSN" up
+              # Exit 0 from `up` only says nothing errored. Print the resulting
+              # state so the log shows which migrations are actually applied.
+              echo "--- migration state after apply ---"
+              goose -dir /migrations clickhouse "$DSN" status
           env:
             - name: CLICKHOUSE_PASSWORD
               valueFrom:
