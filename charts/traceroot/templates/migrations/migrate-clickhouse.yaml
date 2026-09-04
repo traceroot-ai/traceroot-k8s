@@ -18,9 +18,12 @@ metadata:
 spec:
   backoffLimit: 3
   # before-hook-creation only clears the Job when a later release runs one, so an
-  # uninstalled or long-idle release would keep it forever. This bounds that: the
-  # log stays readable for a week, then Kubernetes collects the Job and its pod.
-  ttlSecondsAfterFinished: 604800
+  # uninstalled or long-idle release would keep it forever. This bounds that.
+  # Explicit nil check rather than `with`, so an operator can set 0 to collect
+  # immediately; null omits the field and keeps the Job indefinitely.
+  {{- if not (kindIs "invalid" .Values.migrations.retainFinishedSeconds) }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.retainFinishedSeconds }}
+  {{- end }}
   template:
     metadata:
       labels:
