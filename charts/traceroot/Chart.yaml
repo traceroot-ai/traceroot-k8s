@@ -2,7 +2,7 @@ apiVersion: v2
 name: traceroot
 description: Observability and self-improving layer for AI agents
 type: application
-version: 1.0.0
+version: 1.0.1
 appVersion: "0.1.0"
 
 home: https://traceroot.ai
