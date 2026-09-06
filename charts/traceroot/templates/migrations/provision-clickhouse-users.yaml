@@ -76,7 +76,22 @@ spec:
               # Printed before the DDL so a permissions failure below is
               # immediately explicable from this log alone.
               echo "--- grants held by the admin running this job ---"
-              "${CH[@]}" --query "SHOW GRANTS"
+              ADMIN_GRANTS=$("${CH[@]}" --query "SHOW GRANTS" 2>&1) || ADMIN_GRANTS=""
+              printf '%s\n' "$ADMIN_GRANTS"
+
+              # The bundled image grants its admin CREATE USER and SET DEFINER, so no
+              # extra configuration is normally needed. An image or an external server
+              # whose admin is narrower would otherwise fail several statements later
+              # with a bare permission error; checked here so the message names both
+              # the cause and the fix.
+              for NEEDED in "CREATE USER" "SET DEFINER"; do
+                if ! printf '%s' "$ADMIN_GRANTS" | grep -qF "$NEEDED"; then
+                  echo "FAIL: the ClickHouse admin does not hold $NEEDED, which provisioning requires."
+                  echo "Set clickhouse.usersExtraOverrides to enable access_management for this"
+                  echo "account, or point the chart at an admin that already has it."
+                  exit 1
+                fi
+              done
 
               # Idempotent and reconciling: CREATE ... IF NOT EXISTS leaves an
               # existing user on its old password, so each CREATE is followed by

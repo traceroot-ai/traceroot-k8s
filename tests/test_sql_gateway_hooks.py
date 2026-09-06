@@ -103,11 +103,11 @@ def test_successful_runs_are_not_deleted(name):
 
 
 @pytest.mark.parametrize("name", [_PROVISION, _MIGRATE, _MIGRATE_PG, _VERIFY])
-def test_retention_is_bounded(name):
-    """Retained Jobs need a TTL, or an uninstalled release keeps them forever."""
+def test_retention_comes_from_the_shared_value(name):
+    """Whether inline or via the shared helper, retention must not be hardcoded."""
     text = _template_text(name)
-    assert "ttlSecondsAfterFinished" in text
-    assert ".Values.migrations.retainFinishedSeconds" in text, "should use the shared value"
+    assert "ttlSecondsAfterFinished" in text or "traceroot.migrations.ttl" in text
+    assert ".Values.migrations.retainFinishedSeconds" in text or "traceroot.migrations.ttl" in text
 
 
 def test_retention_default_is_positive_and_tunable():
@@ -268,6 +268,18 @@ class TestRendered:
                 checked += 1
         assert checked, "no container carried the read-only password; nothing was asserted"
 
+
+    def test_every_retained_job_renders_a_ttl(self):
+        """Asserted on the rendered output, since the value reaches the Jobs by
+        two different routes and only the result is what Kubernetes sees."""
+        found = {}
+        for d in self._render(*self.ENABLED):
+            if d.get("kind") != "Job":
+                continue
+            found[d["metadata"]["name"]] = d["spec"].get("ttlSecondsAfterFinished")
+        assert len(found) == 4, "expected four hook Jobs, got %s" % sorted(found)
+        for name, ttl in found.items():
+            assert isinstance(ttl, int) and ttl > 0, "%s has no bounded TTL: %r" % (name, ttl)
 
     def test_verify_toggle_actually_gates_the_verification_job(self):
         names = self._names(self._render(*self.ENABLED, "--set", "sqlGateway.verify=false"))
