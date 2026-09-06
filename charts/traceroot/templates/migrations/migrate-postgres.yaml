@@ -7,9 +7,19 @@ metadata:
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "0"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    # Same reasoning as migrate-clickhouse: hook-succeeded destroys the migration
+    # output at the moment it becomes the record of what a release did to the
+    # database, and only before-hook-creation is needed to recreate the Job.
+    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 3
+  {{- $ttl := .Values.migrations.retainFinishedSeconds }}
+  {{- if not (kindIs "invalid" $ttl) }}
+  {{- if or (kindIs "string" $ttl) (kindIs "bool" $ttl) }}
+  {{- fail (printf "migrations.retainFinishedSeconds must be a number or null, got %v" $ttl) }}
+  {{- end }}
+  ttlSecondsAfterFinished: {{ $ttl }}
+  {{- end }}
   template:
     metadata:
       labels:
