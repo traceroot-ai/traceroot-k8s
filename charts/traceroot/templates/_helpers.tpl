@@ -45,6 +45,10 @@ in the middle of an upgrade, with an error that says nothing about which value.
 {{- fail (printf "migrations.retainFinishedSeconds must fit in int32 (max 2147483647, about 68 years), got %v -- Kubernetes types ttlSecondsAfterFinished as int32 and would reject the Job" $ttl) -}}
 {{- end -}}
 ttlSecondsAfterFinished: {{ int64 $ttl }}
+{{- end -}}
+{{- end }}
+
+{{/*
 A ClickHouse identifier that is safe to splice into DDL and into a shell command
 line. Both happen in the SQL-gateway hooks, so anything outside this character set
 is rejected at render time rather than becoming a syntax error at CREATE USER, or
