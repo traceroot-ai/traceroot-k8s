@@ -20,6 +20,7 @@ installed.
 
 import os
 import shutil
+import tempfile
 import subprocess
 
 import pytest
@@ -55,9 +56,32 @@ def test_gateway_templates_are_gated_on_the_flag():
         assert ".Values.sqlGateway.enabled" in _template_text(name)
 
 
+# The same set the requireAccessManagement helper accepts. Kept in step deliberately:
+# a grant delivered through a key the helper does not know about would satisfy
+# ClickHouse while the helper still refused the render.
+_ACCESS_MANAGEMENT_KEYS = (
+    "usersExtraOverrides",
+    "usersExtraOverridesConfigmap",
+    "usersExtraOverridesSecret",
+)
+
+
 def test_admin_access_management_is_not_granted_by_default():
     """Creating users needs it; an install without the gateway should not have it."""
-    assert "usersExtraOverrides" not in (_values()["clickhouse"] or {})
+    ch = _values()["clickhouse"] or {}
+    for key in _ACCESS_MANAGEMENT_KEYS:
+        assert not ch.get(key), "%s would grant it by default" % key
+    # Any other override channel could carry the grant too; assert none mentions it.
+    for key in ("defaultConfigurationOverrides", "extraOverrides", "configuration"):
+        assert "access_management" not in str(ch.get(key) or "")
+
+
+def test_helper_accepts_the_same_keys_the_test_checks():
+    """If the helper learns a new channel, this test must learn it too."""
+    helper = open(os.path.join(_CHART, "templates", "_helpers.tpl")).read()
+    block = helper[helper.index("requireAccessManagement"):]
+    for key in _ACCESS_MANAGEMENT_KEYS:
+        assert key in block, "%s missing from requireAccessManagement" % key
 
 
 def test_provisioning_runs_before_the_migration_and_verification_after():
@@ -251,6 +275,29 @@ class TestRendered:
                 checked += 1
         assert checked, "no container carried the read-only password; nothing was asserted"
 
+
+    def test_verify_toggle_actually_gates_the_verification_job(self):
+        names = self._names(self._render(*self.ENABLED, "--set", "sqlGateway.verify=false"))
+        assert not [n for n in names if _VERIFY in n], "verify=false still rendered the Job"
+        assert [n for n in names if _PROVISION in n], "provisioning should be unaffected"
+
+    def test_rendered_job_scripts_are_valid_shell(self):
+        """A templating change producing unbalanced quotes would otherwise only show in-cluster."""
+        checked = 0
+        for d in self._render(*self.ENABLED):
+            name = d.get("metadata", {}).get("name", "")
+            if not (name.endswith(_PROVISION) or name.endswith(_VERIFY)):
+                continue
+            script = d["spec"]["template"]["spec"]["containers"][0]["args"][0]
+            with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as fh:
+                fh.write(script)
+            try:
+                out = subprocess.run(["bash", "-n", fh.name], capture_output=True, text=True)
+                assert out.returncode == 0, "%s: %s" % (name, out.stderr)
+            finally:
+                os.unlink(fh.name)
+            checked += 1
+        assert checked == 2, "expected both gateway job scripts, checked %d" % checked
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
 @pytest.mark.parametrize(
