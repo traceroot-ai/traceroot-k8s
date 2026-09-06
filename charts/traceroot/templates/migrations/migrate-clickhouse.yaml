@@ -11,9 +11,11 @@ metadata:
     # recreate this Job on the next release (a Job's spec.template is immutable,
     # so the stale object has to go first); hook-succeeded is housekeeping, and
     # it deletes the Job and its pod the moment the run succeeds, taking the
-    # goose output with it. A failed hook is retained either way. Keeping the
-    # successful run means the record of which migrations applied survives for
+    # goose output with it. Failures are already retained by this policy. Keeping
+    # the successful run means the record of which migrations applied survives for
     # anyone with read-only cluster access, who cannot query ClickHouse directly.
+    # Retention is still bounded below by ttlSecondsAfterFinished, which unlike
+    # this policy applies to failed Jobs as well as successful ones.
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 3
@@ -21,8 +23,12 @@ spec:
   # uninstalled or long-idle release would keep it forever. This bounds that.
   # Explicit nil check rather than `with`, so an operator can set 0 to collect
   # immediately; null omits the field and keeps the Job indefinitely.
-  {{- if not (kindIs "invalid" .Values.migrations.retainFinishedSeconds) }}
-  ttlSecondsAfterFinished: {{ .Values.migrations.retainFinishedSeconds }}
+  {{- $ttl := .Values.migrations.retainFinishedSeconds }}
+  {{- if not (kindIs "invalid" $ttl) }}
+  {{- if or (kindIs "string" $ttl) (kindIs "bool" $ttl) }}
+  {{- fail (printf "migrations.retainFinishedSeconds must be a number or null, got %v" $ttl) }}
+  {{- end }}
+  ttlSecondsAfterFinished: {{ $ttl }}
   {{- end }}
   template:
     metadata:
@@ -44,8 +50,11 @@ spec:
               goose -dir /migrations clickhouse "$DSN" up
               # Exit 0 from `up` only says nothing errored. Print the resulting
               # state so the log shows which migrations are actually applied.
+              # Never allowed to fail the hook: the schema is already applied by this
+              # point, and aborting the release over a read-only status query would
+              # report a failed migration for a migration that succeeded.
               echo "--- migration state after apply ---"
-              goose -dir /migrations clickhouse "$DSN" status
+              goose -dir /migrations clickhouse "$DSN" status || echo "(status query failed; the migration above still succeeded)"
           env:
             - name: CLICKHOUSE_PASSWORD
               valueFrom:

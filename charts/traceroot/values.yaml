@@ -158,7 +158,9 @@ migrations:
   # How long a finished migration Job -- and so its pod, and so its log -- is kept
   # before Kubernetes collects it. This is the only record of what a release applied
   # for anyone without cluster-admin, so it is retained rather than deleted on
-  # success. Set to 0 to collect immediately, or null to keep indefinitely.
+  # success. Null keeps it indefinitely. Note this covers failed Jobs too, so a very
+  # short value discards the diagnostics from a failure as well; 0 collects both the
+  # instant they finish, which defeats the point of retaining them at all.
   retainFinishedSeconds: 604800
   postgres:
     image:
