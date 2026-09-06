@@ -58,14 +58,3 @@ extra client flags that silently change which account the verification runs as.
 {{- end -}}
 {{- $value -}}
 {{- end }}
-
-{{/*
-The gateway hooks need the ClickHouse admin to hold access management, which is a
-subchart setting the chart cannot switch on itself. Caught here rather than as a
-CREATE USER permission failure five minutes into a release.
-*/}}
-{{- define "traceroot.sqlGateway.requireAccessManagement" -}}
-{{- if and .Values.clickhouse.deploy (not (or .Values.clickhouse.usersExtraOverrides .Values.clickhouse.usersExtraOverridesConfigmap .Values.clickhouse.usersExtraOverridesSecret)) -}}
-{{- fail "sqlGateway.enabled requires the ClickHouse admin to hold access management: set clickhouse.usersExtraOverrides (or the ConfigMap/Secret variant) to grant it, or the provisioning hook cannot create the gateway accounts." -}}
-{{- end -}}
-{{- end }}

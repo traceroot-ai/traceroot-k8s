@@ -1,5 +1,4 @@
 {{- if .Values.sqlGateway.enabled }}
-{{- include "traceroot.sqlGateway.requireAccessManagement" . }}
 apiVersion: batch/v1
 kind: Job
 metadata:

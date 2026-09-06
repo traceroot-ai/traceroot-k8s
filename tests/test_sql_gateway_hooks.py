@@ -56,9 +56,9 @@ def test_gateway_templates_are_gated_on_the_flag():
         assert ".Values.sqlGateway.enabled" in _template_text(name)
 
 
-# The same set the requireAccessManagement helper accepts. Kept in step deliberately:
-# a grant delivered through a key the helper does not know about would satisfy
-# ClickHouse while the helper still refused the render.
+# Every channel through which the chart could widen the ClickHouse admin. It has no
+# reason to: the bundled image already grants what provisioning needs, and setting
+# any of these would force a ClickHouse pod restart.
 _ACCESS_MANAGEMENT_KEYS = (
     "usersExtraOverrides",
     "usersExtraOverridesConfigmap",
@@ -74,14 +74,6 @@ def test_admin_access_management_is_not_granted_by_default():
     # Any other override channel could carry the grant too; assert none mentions it.
     for key in ("defaultConfigurationOverrides", "extraOverrides", "configuration"):
         assert "access_management" not in str(ch.get(key) or "")
-
-
-def test_helper_accepts_the_same_keys_the_test_checks():
-    """If the helper learns a new channel, this test must learn it too."""
-    helper = open(os.path.join(_CHART, "templates", "_helpers.tpl")).read()
-    block = helper[helper.index("requireAccessManagement"):]
-    for key in _ACCESS_MANAGEMENT_KEYS:
-        assert key in block, "%s missing from requireAccessManagement" % key
 
 
 def test_provisioning_runs_before_the_migration_and_verification_after():
@@ -316,14 +308,3 @@ def test_identifiers_that_would_break_sql_or_the_shell_are_refused(override, exp
         args += ["--set", "%s=%s" % (k, v)]
     out = subprocess.run(args, capture_output=True, text=True)
     assert out.returncode != 0 and expect in out.stderr, out.stderr
-
-
-@pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
-def test_enabling_without_access_management_is_refused():
-    """The hooks cannot create users without it; fail at render, not five minutes in."""
-    out = subprocess.run(
-        ["helm", "template", "traceroot", _CHART, "--set", "ingress.host=example.com",
-         "--set", "sqlGateway.enabled=true"],
-        capture_output=True, text=True,
-    )
-    assert out.returncode != 0 and "access management" in out.stderr, out.stderr
