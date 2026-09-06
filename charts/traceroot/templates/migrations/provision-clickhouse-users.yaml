@@ -1,4 +1,5 @@
 {{- if .Values.sqlGateway.enabled }}
+{{- include "traceroot.sqlGateway.requireAccessManagement" . }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -41,8 +42,11 @@ spec:
               # An array, not a string: a password containing whitespace or a glob
               # character would otherwise be re-split by the shell before it ever
               # reached the client, and authentication would fail for no visible reason.
+              # Password through the environment, not argv: a --password argument is
+              # readable in /proc/<pid>/cmdline for anything that can see the process.
+              export CLICKHOUSE_PASSWORD="${CLICKHOUSE_ADMIN_PASSWORD}"
               CH=(clickhouse-client --host "{{ include "traceroot.clickhouse.hostname" . }}" --port 9000
-                  --user "{{ .Values.clickhouse.auth.username }}" --password "${CLICKHOUSE_ADMIN_PASSWORD}")
+                  --user "{{ .Values.clickhouse.auth.username }}")
 
               # Passwords are sent as their SHA-256 hash rather than as literals, so no
               # quote or backslash in a secret can terminate or alter the surrounding
@@ -50,11 +54,20 @@ spec:
               WRITER_HASH=$(printf '%s' "${SQL_GATEWAY_WRITER_PASSWORD}" | sha256sum | cut -d' ' -f1)
               RO_HASH=$(printf '%s' "${SQL_GATEWAY_RO_PASSWORD}" | sha256sum | cut -d' ' -f1)
 
-              # This hook can fire before the ClickHouse pod is Ready.
-              for i in $(seq 1 60); do
-                "${CH[@]}" --query "SELECT 1" >/dev/null 2>&1 && break
-                echo "waiting for clickhouse ($i/60)"; sleep 5
+              # This hook can fire before the ClickHouse pod is Ready. The budget stays
+              # well inside Helm's default 5m hook timeout -- matching it would mean the
+              # release aborts before the last retries ever run. The final error is kept
+              # and printed, so a wrong password is distinguishable from a slow start
+              # instead of looking identical for the whole window.
+              READY=""
+              for i in $(seq 1 24); do
+                if POLL_ERR=$("${CH[@]}" --query "SELECT 1" 2>&1); then READY=yes; break; fi
+                echo "waiting for clickhouse ($i/24)"; sleep 5
               done
+              if [ -z "$READY" ]; then
+                echo "gave up waiting for clickhouse after 120s; last error:"
+                printf '%s\n' "$POLL_ERR"; exit 1
+              fi
 
               echo "--- clickhouse version ---"
               "${CH[@]}" --query "SELECT version()"
@@ -75,40 +88,40 @@ spec:
               # creates those views has not run yet.
               echo "--- provisioning identities ---"
               "${CH[@]}" --multiquery --query "
-                CREATE USER IF NOT EXISTS {{ .Values.sqlGateway.writerUser }}
+                CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}
                     IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';
-                ALTER USER {{ .Values.sqlGateway.writerUser }}
+                ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}
                     IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';
-                GRANT SELECT ON default.spans  TO {{ .Values.sqlGateway.writerUser }};
-                GRANT SELECT ON default.traces TO {{ .Values.sqlGateway.writerUser }};
-                CREATE SETTINGS PROFILE IF NOT EXISTS {{ .Values.sqlGateway.settingsProfile }} SETTINGS
+                GRANT SELECT ON default.spans  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }};
+                GRANT SELECT ON default.traces TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }};
+                CREATE SETTINGS PROFILE IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
                     readonly = 1,
                     max_execution_time = {{ .Values.sqlGateway.limits.maxExecutionTime }} CONST,
                     max_result_rows = {{ .Values.sqlGateway.limits.maxResultRows }} CONST,
                     max_result_bytes = {{ .Values.sqlGateway.limits.maxResultBytes }} CONST,
                     max_memory_usage = {{ .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
-                ALTER SETTINGS PROFILE {{ .Values.sqlGateway.settingsProfile }} SETTINGS
+                ALTER SETTINGS PROFILE {{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
                     readonly = 1,
                     max_execution_time = {{ .Values.sqlGateway.limits.maxExecutionTime }} CONST,
                     max_result_rows = {{ .Values.sqlGateway.limits.maxResultRows }} CONST,
                     max_result_bytes = {{ .Values.sqlGateway.limits.maxResultBytes }} CONST,
                     max_memory_usage = {{ .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
-                CREATE USER IF NOT EXISTS {{ .Values.sqlGateway.readonlyUser }}
+                CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
                     IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
-                    SETTINGS PROFILE '{{ .Values.sqlGateway.settingsProfile }}';
-                ALTER USER {{ .Values.sqlGateway.readonlyUser }}
+                    SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
+                ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
                     IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
-                    SETTINGS PROFILE '{{ .Values.sqlGateway.settingsProfile }}';
-                GRANT SELECT ON default.spans_public_v1  TO {{ .Values.sqlGateway.readonlyUser }};
-                GRANT SELECT ON default.traces_public_v1 TO {{ .Values.sqlGateway.readonlyUser }};
+                    SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
+                GRANT SELECT ON default.spans_public_v1  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
+                GRANT SELECT ON default.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
               "
 
               # ClickHouse redacts passwords in query_log, so echoing the
               # resulting grants leaks nothing and records what was applied.
-              echo "--- grants: {{ .Values.sqlGateway.writerUser }} ---"
-              "${CH[@]}" --query "SHOW GRANTS FOR {{ .Values.sqlGateway.writerUser }}"
-              echo "--- grants: {{ .Values.sqlGateway.readonlyUser }} ---"
-              "${CH[@]}" --query "SHOW GRANTS FOR {{ .Values.sqlGateway.readonlyUser }}"
+              echo "--- grants: {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} ---"
+              "${CH[@]}" --query "SHOW GRANTS FOR {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}"
+              echo "--- grants: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} ---"
+              "${CH[@]}" --query "SHOW GRANTS FOR {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}"
               echo "provisioning complete"
           env:
             - name: CLICKHOUSE_ADMIN_PASSWORD
@@ -120,12 +133,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.clickhouse.auth.existingSecret }}
-                  key: {{ .Values.sqlGateway.secretKeys.writerPassword }}
+                  key: {{ .Values.sqlGateway.secretKeys.writerPassword | quote }}
             - name: SQL_GATEWAY_RO_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.clickhouse.auth.existingSecret }}
-                  key: {{ .Values.sqlGateway.secretKeys.readonlyPassword }}
+                  key: {{ .Values.sqlGateway.secretKeys.readonlyPassword | quote }}
           resources:
             requests:
               cpu: "100m"

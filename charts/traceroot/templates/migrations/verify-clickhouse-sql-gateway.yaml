@@ -40,16 +40,21 @@ spec:
               HOST="{{ include "traceroot.clickhouse.hostname" . }}"
               # Arrays, not strings: a password containing whitespace or a glob would
               # otherwise be re-split by the shell before reaching the client.
+              # Passwords through the environment, not argv, which is world-readable
+              # in /proc for anything sharing a namespace. The admin is exported; the
+              # read-only user is set per call, since both clients run in this script.
+              export CLICKHOUSE_PASSWORD="${CLICKHOUSE_ADMIN_PASSWORD}"
               CH_ADMIN=(clickhouse-client --host "$HOST" --port 9000
-                        --user "{{ .Values.clickhouse.auth.username }}" --password "${CLICKHOUSE_ADMIN_PASSWORD}")
+                        --user "{{ .Values.clickhouse.auth.username }}")
               # No per-query settings here on purpose. This user runs under a
               # readonly = 1 profile whose caps are CONST, so the server rejects any
               # attempt to set one -- including from the command line. Passing a bound
               # would make every probe below fail with a settings error instead of
               # running, which reads as the isolation being broken. The cap is already
               # enforced by the profile; LIMIT 0 keeps the probe itself cheap.
-              CH_RO=(clickhouse-client --host "$HOST" --port 9000 --user "{{ .Values.sqlGateway.readonlyUser }}"
-                     --password "${SQL_GATEWAY_RO_PASSWORD}")
+              CH_RO=(env CLICKHOUSE_PASSWORD="${SQL_GATEWAY_RO_PASSWORD}"
+                     clickhouse-client --host "$HOST" --port 9000
+                     --user "{{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}")
               FAILED=0
 
               echo "--- clickhouse version ---"
@@ -71,10 +76,10 @@ spec:
                 # different, longer account -- sql_gateway_writer_admin contains
                 # sql_gateway_writer -- which is exactly the substitution this exists
                 # to catch. -F because the account name is operator-supplied.
-                if printf '%s' "$DDL" | grep -qF "DEFINER = {{ .Values.sqlGateway.writerUser }} SQL SECURITY DEFINER"; then
-                  echo "OK: $VIEW is owned by {{ .Values.sqlGateway.writerUser }}"
+                if printf '%s' "$DDL" | grep -qF "DEFINER = {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} SQL SECURITY DEFINER"; then
+                  echo "OK: $VIEW is owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}"
                 else
-                  echo "FAIL: $VIEW is not owned by {{ .Values.sqlGateway.writerUser }}"; FAILED=1
+                  echo "FAIL: $VIEW is not owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}"; FAILED=1
                 fi
               done
 
@@ -85,9 +90,9 @@ spec:
                 # and a missing view all land here, and only one of them is the grant
                 # problem the bare message used to imply.
                 if ERR=$("${CH_RO[@]}" --query "SELECT count() FROM default.$VIEW(project_id = 'helm-verification-probe')" 2>&1); then
-                  echo "OK: {{ .Values.sqlGateway.readonlyUser }} can read $VIEW"
+                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read $VIEW"
                 else
-                  echo "FAIL: {{ .Values.sqlGateway.readonlyUser }} cannot read $VIEW:"
+                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} cannot read $VIEW:"
                   printf '%s\n' "$ERR"; FAILED=1
                 fi
               done
@@ -100,9 +105,9 @@ spec:
               for TABLE in spans traces; do
                 echo "--- read-only user is denied default.$TABLE ---"
                 if ERR=$("${CH_RO[@]}" --query "SELECT * FROM default.$TABLE LIMIT 0" 2>&1); then
-                  echo "FAIL: {{ .Values.sqlGateway.readonlyUser }} can read default.$TABLE"; FAILED=1
+                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read default.$TABLE"; FAILED=1
                 elif printf '%s' "$ERR" | grep -qE 'ACCESS_DENIED|Code: 497'; then
-                  echo "OK: {{ .Values.sqlGateway.readonlyUser }} denied default.$TABLE (ACCESS_DENIED)"
+                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} denied default.$TABLE (ACCESS_DENIED)"
                 else
                   echo "FAIL: probe of default.$TABLE did not return ACCESS_DENIED; denial unproven:"
                   printf '%s\n' "$ERR"; FAILED=1
@@ -123,7 +128,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.clickhouse.auth.existingSecret }}
-                  key: {{ .Values.sqlGateway.secretKeys.readonlyPassword }}
+                  key: {{ .Values.sqlGateway.secretKeys.readonlyPassword | quote }}
           resources:
             requests:
               cpu: "100m"

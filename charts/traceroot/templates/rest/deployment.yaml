@@ -55,7 +55,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.clickhouse.auth.existingSecret }}
-                  key: {{ .Values.sqlGateway.secretKeys.readonlyPassword }}
+                  key: {{ .Values.sqlGateway.secretKeys.readonlyPassword | quote }}
             {{- end }}
             - name: REDIS_URL
               valueFrom:

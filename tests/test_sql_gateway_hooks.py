@@ -121,8 +121,9 @@ def test_passwords_are_not_embedded_as_sql_literals():
 def test_client_commands_are_arrays(name):
     """A string command re-splits a password containing whitespace or a glob."""
     text = _template_text(name)
-    assert "[@]}\" --query" in text or '[@]}" --query' in text
-    assert '--password ${' not in text, "unquoted password interpolation"
+    assert '[@]}" --query' in text, "client must be invoked as an array"
+    code = "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
+    assert "--password" not in code, "password must not reach argv"
 
 
 def _run_block(script: str, block: str, stub: str, cmd_var: str) -> str:
@@ -130,6 +131,7 @@ def _run_block(script: str, block: str, stub: str, cmd_var: str) -> str:
     harness = "\n".join([
         "set -euo pipefail",
         "FAILED=0",
+        'CLICKHOUSE_PASSWORD=x; SQL_GATEWAY_RO_PASSWORD=x; HOST=h',
         "stub() { %s }" % stub,
         "%s=(stub)" % cmd_var,
         block,
@@ -141,6 +143,10 @@ def _run_block(script: str, block: str, stub: str, cmd_var: str) -> str:
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
 class TestRendered:
+    # Enabling the gateway now requires the admin access-management override, so
+    # every "enabled" render supplies it. Its absence is asserted separately.
+    ENABLED = ("--set", "sqlGateway.enabled=true", "--set", "clickhouse.usersExtraOverrides=x")
+
     @staticmethod
     def _render(*extra: str) -> list:
         out = subprocess.run(
@@ -160,7 +166,7 @@ class TestRendered:
         assert not [n for n in names if _PROVISION in n or _VERIFY in n]
 
     def test_both_jobs_render_when_enabled(self):
-        names = self._names(self._render("--set", "sqlGateway.enabled=true"))
+        names = self._names(self._render(*self.ENABLED))
         assert [n for n in names if _PROVISION in n]
         assert [n for n in names if _VERIFY in n]
 
@@ -177,10 +183,10 @@ class TestRendered:
             return found
 
         assert ro_env(self._render()) == set()
-        assert ro_env(self._render("--set", "sqlGateway.enabled=true")) == {"traceroot-rest"}
+        assert ro_env(self._render(*self.ENABLED)) == {"traceroot-rest"}
 
     def _verify_script(self) -> str:
-        for d in self._render("--set", "sqlGateway.enabled=true"):
+        for d in self._render(*self.ENABLED):
             if d.get("metadata", {}).get("name", "").endswith("verify-clickhouse-sql-gateway"):
                 return d["spec"]["template"]["spec"]["containers"][0]["args"][0]
         raise AssertionError("verification job did not render")
@@ -231,7 +237,8 @@ class TestRendered:
 
     def test_readonly_user_never_gets_the_admin_password(self):
         """The gateway user's whole purpose is not being the admin."""
-        for d in self._render("--set", "sqlGateway.enabled=true"):
+        checked = 0
+        for d in self._render(*self.ENABLED):
             if d.get("kind") != "Deployment":
                 continue
             for c in d["spec"]["template"]["spec"]["containers"]:
@@ -241,3 +248,35 @@ class TestRendered:
                 ro_key = env["CLICKHOUSE_RO_PASSWORD"]["valueFrom"]["secretKeyRef"]["key"]
                 admin_key = env["CLICKHOUSE_PASSWORD"]["valueFrom"]["secretKeyRef"]["key"]
                 assert ro_key != admin_key
+                checked += 1
+        assert checked, "no container carried the read-only password; nothing was asserted"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
+@pytest.mark.parametrize(
+    "override,expect",
+    [
+        ({"sqlGateway.writerUser": "sql-gateway-writer"}, "writerUser must match"),
+        ({"sqlGateway.readonlyUser": 'ro" --user default --password oops "x'}, "readonlyUser must match"),
+        ({"sqlGateway.settingsProfile": "1profile"}, "settingsProfile must match"),
+    ],
+)
+def test_identifiers_that_would_break_sql_or_the_shell_are_refused(override, expect):
+    """These values are spliced into DDL and into a client command line."""
+    args = ["helm", "template", "traceroot", _CHART, "--set", "ingress.host=example.com",
+            "--set", "sqlGateway.enabled=true", "--set", "clickhouse.usersExtraOverrides=x"]
+    for k, v in override.items():
+        args += ["--set", "%s=%s" % (k, v)]
+    out = subprocess.run(args, capture_output=True, text=True)
+    assert out.returncode != 0 and expect in out.stderr, out.stderr
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
+def test_enabling_without_access_management_is_refused():
+    """The hooks cannot create users without it; fail at render, not five minutes in."""
+    out = subprocess.run(
+        ["helm", "template", "traceroot", _CHART, "--set", "ingress.host=example.com",
+         "--set", "sqlGateway.enabled=true"],
+        capture_output=True, text=True,
+    )
+    assert out.returncode != 0 and "access management" in out.stderr, out.stderr

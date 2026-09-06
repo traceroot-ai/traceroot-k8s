@@ -45,5 +45,27 @@ in the middle of an upgrade, with an error that says nothing about which value.
 {{- fail (printf "migrations.retainFinishedSeconds must fit in int32 (max 2147483647, about 68 years), got %v -- Kubernetes types ttlSecondsAfterFinished as int32 and would reject the Job" $ttl) -}}
 {{- end -}}
 ttlSecondsAfterFinished: {{ int64 $ttl }}
+A ClickHouse identifier that is safe to splice into DDL and into a shell command
+line. Both happen in the SQL-gateway hooks, so anything outside this character set
+is rejected at render time rather than becoming a syntax error at CREATE USER, or
+extra client flags that silently change which account the verification runs as.
+*/}}
+{{- define "traceroot.sqlGateway.identifier" -}}
+{{- $name := .name -}}
+{{- $value := .value -}}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $value) -}}
+{{- fail (printf "sqlGateway.%s must match ^[A-Za-z_][A-Za-z0-9_]*$ (it is used unquoted in ClickHouse DDL and in a shell command), got %q" $name $value) -}}
+{{- end -}}
+{{- $value -}}
+{{- end }}
+
+{{/*
+The gateway hooks need the ClickHouse admin to hold access management, which is a
+subchart setting the chart cannot switch on itself. Caught here rather than as a
+CREATE USER permission failure five minutes into a release.
+*/}}
+{{- define "traceroot.sqlGateway.requireAccessManagement" -}}
+{{- if and .Values.clickhouse.deploy (not (or .Values.clickhouse.usersExtraOverrides .Values.clickhouse.usersExtraOverridesConfigmap .Values.clickhouse.usersExtraOverridesSecret)) -}}
+{{- fail "sqlGateway.enabled requires the ClickHouse admin to hold access management: set clickhouse.usersExtraOverrides (or the ConfigMap/Secret variant) to grant it, or the provisioning hook cannot create the gateway accounts." -}}
 {{- end -}}
 {{- end }}
