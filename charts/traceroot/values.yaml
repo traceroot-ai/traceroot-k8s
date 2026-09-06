@@ -138,17 +138,21 @@ s3:
 # --- ClickHouse (Bitnami subchart) ---
 clickhouse:
   deploy: true
-  # Enabling sqlGateway additionally requires the admin user to hold access
-  # management, which the stock admin does not have. It is a subchart setting,
-  # so it cannot be switched on from sqlGateway.enabled and must be supplied:
+  # The bundled ClickHouse image already grants its admin CREATE USER, ALTER USER
+  # and SET DEFINER, which is everything the SQL gateway's provisioning needs, so
+  # nothing extra is required here for the default deployment. Verified directly
+  # against bitnamilegacy/clickhouse:25.2.1-debian-12-r0.
+  #
+  # An external ClickHouse whose admin is narrower can be granted it explicitly,
+  # which is why this is documented rather than assumed:
   #   usersExtraOverrides: |
   #     <clickhouse>
   #       <users>
   #         <default><access_management>1</access_management></default>
   #       </users>
   #     </clickhouse>
-  # Left unset by default so an installation that does not serve the gateway
-  # keeps the narrower admin.
+  # Left unset by default: the chart should not widen an admin that does not need
+  # it, and setting it forces a ClickHouse pod restart.
   image:
     repository: bitnamilegacy/clickhouse
   auth:
