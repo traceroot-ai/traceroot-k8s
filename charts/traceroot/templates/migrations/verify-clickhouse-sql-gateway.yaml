@@ -42,8 +42,14 @@ spec:
               # otherwise be re-split by the shell before reaching the client.
               CH_ADMIN=(clickhouse-client --host "$HOST" --port 9000
                         --user "{{ .Values.clickhouse.auth.username }}" --password "${CLICKHOUSE_ADMIN_PASSWORD}")
+              # No per-query settings here on purpose. This user runs under a
+              # readonly = 1 profile whose caps are CONST, so the server rejects any
+              # attempt to set one -- including from the command line. Passing a bound
+              # would make every probe below fail with a settings error instead of
+              # running, which reads as the isolation being broken. The cap is already
+              # enforced by the profile; LIMIT 0 keeps the probe itself cheap.
               CH_RO=(clickhouse-client --host "$HOST" --port 9000 --user "{{ .Values.sqlGateway.readonlyUser }}"
-                     --password "${SQL_GATEWAY_RO_PASSWORD}" --max_execution_time 30)
+                     --password "${SQL_GATEWAY_RO_PASSWORD}")
               FAILED=0
 
               echo "--- clickhouse version ---"

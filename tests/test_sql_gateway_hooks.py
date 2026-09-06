@@ -97,6 +97,15 @@ def test_retention_default_is_positive_and_tunable():
     assert _values()["migrations"]["retainFinishedSeconds"] > 0
 
 
+def test_readonly_client_sends_no_per_query_settings():
+    """A readonly = 1 user cannot set them; the server rejects the query outright."""
+    text = _template_text(_VERIFY)
+    ro = text[text.index("CH_RO=("):]
+    ro = ro[: ro.index(")")]
+    for setting in ("max_execution_time", "max_result_rows", "max_result_bytes", "max_memory_usage"):
+        assert setting not in ro, "%s cannot be set by the read-only user" % setting
+
+
 def test_denial_probe_requires_access_denied():
     """A failed probe is not proof of denial -- a timeout fails too."""
     text = _template_text(_VERIFY)
