@@ -33,6 +33,7 @@ _MIGRATIONS = os.path.join(_CHART, "templates", "migrations")
 
 _PROVISION = "provision-clickhouse-users"
 _MIGRATE = "migrate-clickhouse"
+_MIGRATE_PG = "migrate-postgres"
 _VERIFY = "verify-clickhouse-sql-gateway"
 
 
@@ -94,14 +95,14 @@ def test_hooks_share_a_phase_with_the_migration():
     assert phase(_PROVISION) == phase(_MIGRATE) == phase(_VERIFY)
 
 
-@pytest.mark.parametrize("name", [_PROVISION, _MIGRATE, _VERIFY])
+@pytest.mark.parametrize("name", [_PROVISION, _MIGRATE, _MIGRATE_PG, _VERIFY])
 def test_successful_runs_are_not_deleted(name):
     line = next(l for l in _template_text(name).splitlines() if "hook-delete-policy" in l)
     assert "hook-succeeded" not in line
     assert "before-hook-creation" in line, "needed to recreate an immutable Job"
 
 
-@pytest.mark.parametrize("name", [_PROVISION, _MIGRATE, _VERIFY])
+@pytest.mark.parametrize("name", [_PROVISION, _MIGRATE, _MIGRATE_PG, _VERIFY])
 def test_retention_is_bounded(name):
     """Retained Jobs need a TTL, or an uninstalled release keeps them forever."""
     text = _template_text(name)
