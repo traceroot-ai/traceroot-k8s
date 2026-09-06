@@ -114,6 +114,29 @@ spec:
                 fi
               done
 
+              # Renaming readonlyUser leaves the previous account live, with its password
+              # and its grants on the curated views, and uninstalling the release leaves
+              # both accounts behind entirely. Neither is safe to clean up from a hook --
+              # this runs before the new pods roll, so dropping an account would cut off
+              # every still-running one. Reported instead, so an orphan is a line in the
+              # release log rather than something nobody sees. Deliberately not a failure.
+              echo "--- accounts holding SELECT on the curated views ---"
+              ORPHANS=$("${CH_ADMIN[@]}" --query "
+                SELECT DISTINCT user_name FROM system.grants
+                WHERE database = 'default'
+                  AND table IN ('spans_public_v1', 'traces_public_v1')
+                  AND access_type = 'SELECT'
+                  AND user_name IS NOT NULL
+                  AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}'
+              " 2>&1) || ORPHANS=""
+              if [ -n "$ORPHANS" ]; then
+                echo "WARNING: accounts other than {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read the curated views."
+                echo "They were not created by this release and are not removed by it:"
+                printf '%s\n' "$ORPHANS"
+              else
+                echo "OK: only {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} holds SELECT on the curated views"
+              fi
+
               if [ "$FAILED" -ne 0 ]; then
                 echo "sql gateway verification FAILED"; exit 1
               fi
