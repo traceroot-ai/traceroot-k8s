@@ -114,27 +114,34 @@ spec:
                 fi
               done
 
-              # Renaming readonlyUser leaves the previous account live, with its password
-              # and its grants on the curated views, and uninstalling the release leaves
-              # both accounts behind entirely. Neither is safe to clean up from a hook --
-              # this runs before the new pods roll, so dropping an account would cut off
-              # every still-running one. Reported instead, so an orphan is a line in the
-              # release log rather than something nobody sees. Deliberately not a failure.
-              echo "--- accounts holding SELECT on the curated views ---"
+              # Renaming either account leaves the previous one live, with its password
+              # and its grants, and uninstalling the release leaves both behind entirely.
+              # Neither is safe to clean up from a hook -- this runs before the new pods
+              # roll, so dropping an account would cut off every still-running one.
+              # Reported instead, so an orphan is a line in the release log rather than
+              # something nobody sees. Deliberately not a failure.
+              #
+              # Both halves are scanned. The curated views are where a stale read-only
+              # account shows up; the physical tables are where a stale WRITER does, and
+              # that one matters more -- it can read the raw rows, including the blobs the
+              # curated views omit. A scan of the views alone would never see it.
+              echo "--- accounts with SELECT on the gateway's tables and views ---"
               ORPHANS=$("${CH_ADMIN[@]}" --query "
-                SELECT DISTINCT user_name FROM system.grants
+                SELECT DISTINCT user_name, table FROM system.grants
                 WHERE database = 'default'
-                  AND table IN ('spans_public_v1', 'traces_public_v1')
                   AND access_type = 'SELECT'
                   AND user_name IS NOT NULL
-                  AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}'
+                  AND (
+                        (table IN ('spans_public_v1', 'traces_public_v1') AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}')
+                     OR (table IN ('spans', 'traces')                     AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}')
+                  )
               " 2>&1) || ORPHANS=""
               if [ -n "$ORPHANS" ]; then
-                echo "WARNING: accounts other than {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read the curated views."
-                echo "They were not created by this release and are not removed by it:"
+                echo "WARNING: accounts other than {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} and {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} hold gateway grants."
+                echo "They are not created or removed by this release:"
                 printf '%s\n' "$ORPHANS"
               else
-                echo "OK: only {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} holds SELECT on the curated views"
+                echo "OK: only the configured gateway accounts hold these grants"
               fi
 
               if [ "$FAILED" -ne 0 ]; then

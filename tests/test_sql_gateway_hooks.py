@@ -281,6 +281,15 @@ class TestRendered:
         for name, ttl in found.items():
             assert isinstance(ttl, int) and ttl > 0, "%s has no bounded TTL: %r" % (name, ttl)
 
+    def test_orphan_scan_covers_the_physical_tables_not_just_the_views(self):
+        """A stale writer holds SELECT on the raw tables, which is the worse leftover
+        and the one a view-only scan would never surface."""
+        script = self._verify_script()
+        block = script[script.index("system.grants"):]
+        block = block[: block.index('"')]
+        assert "spans_public_v1" in block and "traces_public_v1" in block
+        assert "'spans', 'traces'" in block, "physical tables are not scanned"
+
     def test_verify_toggle_actually_gates_the_verification_job(self):
         names = self._names(self._render(*self.ENABLED, "--set", "sqlGateway.verify=false"))
         assert not [n for n in names if _VERIFY in n], "verify=false still rendered the Job"
