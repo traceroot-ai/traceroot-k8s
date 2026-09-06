@@ -106,10 +106,6 @@ def test_readonly_client_sends_no_per_query_settings():
         assert setting not in ro, "%s cannot be set by the read-only user" % setting
 
 
-def test_denial_probe_requires_access_denied():
-    """A failed probe is not proof of denial -- a timeout fails too."""
-    text = _template_text(_VERIFY)
-    assert "ACCESS_DENIED" in text and "Code: 497" in text
 
 
 def test_passwords_are_not_embedded_as_sql_literals():
@@ -127,6 +123,20 @@ def test_client_commands_are_arrays(name):
     text = _template_text(name)
     assert "[@]}\" --query" in text or '[@]}" --query' in text
     assert '--password ${' not in text, "unquoted password interpolation"
+
+
+def _run_block(script: str, block: str, stub: str, cmd_var: str) -> str:
+    """Execute one extracted block of the rendered job with a stubbed client."""
+    harness = "\n".join([
+        "set -euo pipefail",
+        "FAILED=0",
+        "stub() { %s }" % stub,
+        "%s=(stub)" % cmd_var,
+        block,
+        'echo "FAILED=$FAILED"',
+    ])
+    out = subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
+    return out.stdout + out.stderr
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
@@ -168,6 +178,56 @@ class TestRendered:
 
         assert ro_env(self._render()) == set()
         assert ro_env(self._render("--set", "sqlGateway.enabled=true")) == {"traceroot-rest"}
+
+    def _verify_script(self) -> str:
+        for d in self._render("--set", "sqlGateway.enabled=true"):
+            if d.get("metadata", {}).get("name", "").endswith("verify-clickhouse-sql-gateway"):
+                return d["spec"]["template"]["spec"]["containers"][0]["args"][0]
+        raise AssertionError("verification job did not render")
+
+    @staticmethod
+    def _block(script: str, start: str) -> str:
+        """The `for ... done` loop beginning at the line containing `start`."""
+        lines = script.splitlines()
+        i = next(n for n, l in enumerate(lines) if start in l)
+        i = next(n for n in range(i, len(lines)) if lines[n].strip().startswith("for "))
+        j = next(n for n in range(i, len(lines)) if lines[n].strip() == "done")
+        return "\n".join(lines[i:j + 1])
+
+    # The property the whole Job exists to prove: a probe that merely failed is not
+    # evidence of denial. Executed, not pattern-matched -- a source-text assertion
+    # here passes against a probe that reports every failure as success.
+    @pytest.mark.parametrize(
+        "name,stub,expect_failed",
+        [
+            ("real denial", 'echo "Code: 497. DB::Exception: ACCESS_DENIED" >&2; return 241;', 0),
+            ("timeout", 'echo "Timeout exceeded while reading from socket" >&2; return 159;', 1),
+            ("bad password", 'echo "Authentication failed" >&2; return 4;', 1),
+            ("table readable", 'echo 0; return 0;', 1),
+        ],
+    )
+    def test_only_access_denied_counts_as_denial(self, name, stub, expect_failed):
+        block = self._block(self._verify_script(), "must never reach the physical tables")
+        out = _run_block(self._verify_script(), block, stub, "CH_RO")
+        assert "FAILED=%d" % expect_failed in out, "%s: %s" % (name, out)
+
+    @pytest.mark.parametrize(
+        "definer,expect_failed",
+        [
+            ("sql_gateway_writer", 0),
+            # A longer account containing the expected name must not pass.
+            ("sql_gateway_writer_admin", 1),
+            ("default", 1),
+        ],
+    )
+    def test_definer_check_is_not_a_prefix_match(self, definer, expect_failed):
+        block = self._block(self._verify_script(), "isolation would rest on nothing")
+        stub = (
+            'echo "CREATE VIEW default.v DEFINER = %s SQL SECURITY DEFINER"; echo "AS SELECT 1"; return 0;'
+            % definer
+        )
+        out = _run_block(self._verify_script(), block, stub, "CH_ADMIN")
+        assert "FAILED=%d" % expect_failed in out, "%s: %s" % (definer, out)
 
     def test_readonly_user_never_gets_the_admin_password(self):
         """The gateway user's whole purpose is not being the admin."""

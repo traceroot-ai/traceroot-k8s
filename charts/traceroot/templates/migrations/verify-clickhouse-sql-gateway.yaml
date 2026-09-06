@@ -60,9 +60,18 @@ spec:
               # were created without it, isolation would rest on nothing.
               for VIEW in spans_public_v1 traces_public_v1; do
                 echo "--- definer: $VIEW ---"
-                DDL="$("${CH_ADMIN[@]}" --query "SHOW CREATE VIEW default.$VIEW")"
-                echo "$DDL"
-                if echo "$DDL" | grep -q "DEFINER = {{ .Values.sqlGateway.writerUser }}"; then
+                # Not a bare assignment: under set -e a failed command substitution
+                # would abort here, skipping the remaining checks and the summary.
+                if ! DDL=$("${CH_ADMIN[@]}" --query "SHOW CREATE VIEW default.$VIEW" 2>&1); then
+                  echo "FAIL: could not read the definition of $VIEW:"
+                  printf '%s\n' "$DDL"; FAILED=1; continue
+                fi
+                printf '%s\n' "$DDL"
+                # Anchored on the trailing clause. A bare name match would accept a
+                # different, longer account -- sql_gateway_writer_admin contains
+                # sql_gateway_writer -- which is exactly the substitution this exists
+                # to catch. -F because the account name is operator-supplied.
+                if printf '%s' "$DDL" | grep -qF "DEFINER = {{ .Values.sqlGateway.writerUser }} SQL SECURITY DEFINER"; then
                   echo "OK: $VIEW is owned by {{ .Values.sqlGateway.writerUser }}"
                 else
                   echo "FAIL: $VIEW is not owned by {{ .Values.sqlGateway.writerUser }}"; FAILED=1
@@ -72,10 +81,14 @@ spec:
               # The curated views must stay readable by the gateway user.
               for VIEW in spans_public_v1 traces_public_v1; do
                 echo "--- read-only user reads $VIEW ---"
-                if "${CH_RO[@]}" --query "SELECT count() FROM default.$VIEW(project_id = 'helm-verification-probe')" >/dev/null 2>&1; then
+                # Capture rather than discard: a wrong password, an unreachable host
+                # and a missing view all land here, and only one of them is the grant
+                # problem the bare message used to imply.
+                if ERR=$("${CH_RO[@]}" --query "SELECT count() FROM default.$VIEW(project_id = 'helm-verification-probe')" 2>&1); then
                   echo "OK: {{ .Values.sqlGateway.readonlyUser }} can read $VIEW"
                 else
-                  echo "FAIL: {{ .Values.sqlGateway.readonlyUser }} cannot read $VIEW"; FAILED=1
+                  echo "FAIL: {{ .Values.sqlGateway.readonlyUser }} cannot read $VIEW:"
+                  printf '%s\n' "$ERR"; FAILED=1
                 fi
               done
 
