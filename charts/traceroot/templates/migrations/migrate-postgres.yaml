@@ -13,13 +13,7 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 3
-  {{- $ttl := .Values.migrations.retainFinishedSeconds }}
-  {{- if not (kindIs "invalid" $ttl) }}
-  {{- if or (kindIs "string" $ttl) (kindIs "bool" $ttl) }}
-  {{- fail (printf "migrations.retainFinishedSeconds must be a number or null, got %v" $ttl) }}
-  {{- end }}
-  ttlSecondsAfterFinished: {{ $ttl }}
-  {{- end }}
+  {{- include "traceroot.migrations.ttl" . | nindent 2 }}
   template:
     metadata:
       labels:

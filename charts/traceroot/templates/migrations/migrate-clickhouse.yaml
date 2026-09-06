@@ -23,13 +23,7 @@ spec:
   # uninstalled or long-idle release would keep it forever. This bounds that.
   # Explicit nil check rather than `with`, so an operator can set 0 to collect
   # immediately; null omits the field and keeps the Job indefinitely.
-  {{- $ttl := .Values.migrations.retainFinishedSeconds }}
-  {{- if not (kindIs "invalid" $ttl) }}
-  {{- if or (kindIs "string" $ttl) (kindIs "bool" $ttl) }}
-  {{- fail (printf "migrations.retainFinishedSeconds must be a number or null, got %v" $ttl) }}
-  {{- end }}
-  ttlSecondsAfterFinished: {{ $ttl }}
-  {{- end }}
+  {{- include "traceroot.migrations.ttl" . | nindent 2 }}
   template:
     metadata:
       labels:
