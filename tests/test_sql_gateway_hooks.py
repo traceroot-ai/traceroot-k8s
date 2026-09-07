@@ -110,6 +110,14 @@ def test_retention_comes_from_the_shared_value(name):
     assert ".Values.migrations.retainFinishedSeconds" in text or "traceroot.migrations.ttl" in text
 
 
+def test_retention_rejects_values_kubernetes_cannot_store():
+    """ttlSecondsAfterFinished is int32; a larger value renders fine and is rejected
+    by the API server mid-upgrade instead."""
+    helper = open(os.path.join(_CHART, "templates", "_helpers.tpl")).read()
+    block = helper[helper.index("traceroot.migrations.ttl"):]
+    assert "2147483647" in block, "no int32 upper bound on the retention value"
+
+
 def test_retention_default_is_positive_and_tunable():
     assert _values()["migrations"]["retainFinishedSeconds"] > 0
 
