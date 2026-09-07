@@ -33,11 +33,16 @@ in the middle of an upgrade, with an error that says nothing about which value.
 {{- if not (or (kindIs "float64" $ttl) (kindIs "int64" $ttl) (kindIs "int" $ttl)) -}}
 {{- fail (printf "migrations.retainFinishedSeconds must be a whole number of seconds or null, got %v (%s)" $ttl (kindOf $ttl)) -}}
 {{- end -}}
-{{- if ne (printf "%v" $ttl) (printf "%v" (floor $ttl)) -}}
+{{- /* Numeric, not string: %v renders a large float64 in exponent form, so a string
+       compare here rejected perfectly good whole numbers like 2147483647. */ -}}
+{{- if ne (float64 $ttl) (float64 (int64 $ttl)) -}}
 {{- fail (printf "migrations.retainFinishedSeconds must be a whole number of seconds, got %v" $ttl) -}}
 {{- end -}}
 {{- if lt (int64 $ttl) (int64 0) -}}
 {{- fail (printf "migrations.retainFinishedSeconds must not be negative, got %v" $ttl) -}}
+{{- end -}}
+{{- if gt (int64 $ttl) (int64 2147483647) -}}
+{{- fail (printf "migrations.retainFinishedSeconds must fit in int32 (max 2147483647, about 68 years), got %v -- Kubernetes types ttlSecondsAfterFinished as int32 and would reject the Job" $ttl) -}}
 {{- end -}}
 ttlSecondsAfterFinished: {{ int64 $ttl }}
 {{- end -}}
