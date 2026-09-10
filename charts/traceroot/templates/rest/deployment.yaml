@@ -87,7 +87,7 @@ spec:
             {{- end }}
           livenessProbe:
             httpGet:
-              path: /health
+              path: {{ .Values.rest.healthcheckPath }}
               port: {{ .Values.rest.port }}
             initialDelaySeconds: 15
             periodSeconds: 10
