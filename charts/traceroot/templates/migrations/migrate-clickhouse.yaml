@@ -50,6 +50,10 @@ spec:
               echo "--- migration state after apply ---"
               goose -dir /migrations clickhouse "$DSN" status || echo "(status query failed; the migration above still succeeded)"
           env:
+            # The views this Job creates must land in the same database the gateway
+            # hooks grant on and the app reads from.
+            - name: CLICKHOUSE_DATABASE
+              value: {{ .Values.clickhouse.database | quote }}
             - name: CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef:
