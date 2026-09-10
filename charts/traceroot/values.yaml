@@ -198,12 +198,20 @@ migrations:
 # which an installation that does not serve the gateway needs.
 sqlGateway:
   enabled: false
-  # Also runs a hook after the migration that asserts the views carry the
-  # expected definer and that the read-only user is refused the physical tables.
-  verify: true
+  # Also runs a hook after the migration that asserts the views carry the expected
+  # definer and that the read-only user is refused the physical tables.
+  #
+  # Default false. The hook runs at pre-upgrade, so a gateway drift would otherwise
+  # fail the whole release and leave Helm in pending-upgrade, including for an upgrade
+  # that changed nothing about the gateway. Operators who want that gate should set it
+  # true for their own environments rather than inherit it from the chart default.
+  verify: false
   writerUser: sql_gateway_writer
   readonlyUser: sql_gateway_ro
   settingsProfile: sql_readonly_profile
+  # Database holding the spans/traces tables and the public views. Must match the
+  # CLICKHOUSE_DATABASE the application and the migrations use.
+  database: default
   # Keys read from clickhouse.auth.existingSecret. Supply them however the rest
   # of that Secret is supplied; the chart never creates them.
   secretKeys:
