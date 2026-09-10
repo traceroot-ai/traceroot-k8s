@@ -19,6 +19,10 @@ web:
     tag: "latest"
   replicas: 1
   port: 3000
+  # Path the load balancer probes. Must answer 200 without a session: the
+  # app's auth middleware exempts it, so a 307 to sign-in never counts as
+  # healthy. The kubelet probes below use the same path.
+  healthcheckPath: /api/health
   resources:
     requests:
       cpu: "250m"
@@ -33,6 +37,9 @@ rest:
     tag: "latest"
   replicas: 1
   port: 8000
+  # Path the load balancer probes; FastAPI answers 404 on / so the controller
+  # default would mark every target unhealthy.
+  healthcheckPath: /health
   resources:
     requests:
       cpu: "250m"

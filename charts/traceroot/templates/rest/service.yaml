@@ -4,6 +4,12 @@ metadata:
   name: {{ include "traceroot.fullname" . }}-rest
   labels:
     {{- include "traceroot.labels" . | nindent 4 }}
+  annotations:
+    # Read by the AWS Load Balancer Controller for this Service's target group.
+    # Without it the ALB probes GET / and expects 200, which this service does
+    # not give, so every target shows unhealthy and the ALB only serves traffic
+    # because it fails open.
+    alb.ingress.kubernetes.io/healthcheck-path: {{ .Values.rest.healthcheckPath | quote }}
 spec:
   type: ClusterIP
   ports:
