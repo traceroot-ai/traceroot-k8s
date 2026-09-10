@@ -3,6 +3,28 @@ entries:
   traceroot:
   - apiVersion: v2
     appVersion: 0.1.0
+    created: "2026-09-10T04:21:12.771824852Z"
+    dependencies:
+    - condition: clickhouse.deploy
+      name: clickhouse
+      repository: oci://registry-1.docker.io/bitnamicharts
+      version: 8.0.5
+    description: Observability and self-improving layer for AI agents
+    digest: 8590c30982b4c4197b065fe755ea70074d910c3b5884818ed87c17842e84ba03
+    home: https://traceroot.ai
+    maintainers:
+    - name: TraceRoot.AI
+      url: https://github.com/traceroot-ai
+    name: traceroot
+    sources:
+    - https://github.com/traceroot-ai/traceroot-k8s
+    - https://github.com/traceroot-ai/traceroot
+    type: application
+    urls:
+    - https://github.com/traceroot-ai/traceroot-k8s/releases/download/v1.0.1/traceroot-1.0.1.tgz
+    version: 1.0.1
+  - apiVersion: v2
+    appVersion: 0.1.0
     created: "2026-09-01T19:56:03.130211213Z"
     dependencies:
     - condition: clickhouse.deploy
@@ -23,4 +45,4 @@ entries:
     urls:
     - https://github.com/traceroot-ai/traceroot-k8s/releases/download/v1.0.0/traceroot-1.0.0.tgz
     version: 1.0.0
-generated: "2026-09-01T19:56:03.130220385Z"
+generated: "2026-09-10T04:21:12.77183755Z"
