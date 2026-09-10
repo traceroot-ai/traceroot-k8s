@@ -138,6 +138,11 @@ s3:
 # --- ClickHouse (Bitnami subchart) ---
 clickhouse:
   deploy: true
+  # The database holding spans, traces and the public SQL views. Every consumer reads
+  # this one value: the app Deployments, the migration Job that creates the views, and
+  # the SQL gateway provisioning and verification hooks that grant on them. They must
+  # agree, because grants landing on a different database from the views is silent.
+  database: default
   # The bundled ClickHouse image already grants its admin CREATE USER, ALTER USER
   # and SET DEFINER, which is everything the SQL gateway's provisioning needs, so
   # nothing extra is required here for the default deployment. Verified directly
@@ -209,9 +214,6 @@ sqlGateway:
   writerUser: sql_gateway_writer
   readonlyUser: sql_gateway_ro
   settingsProfile: sql_readonly_profile
-  # Database holding the spans/traces tables and the public views. Must match the
-  # CLICKHOUSE_DATABASE the application and the migrations use.
-  database: default
   # Keys read from clickhouse.auth.existingSecret. Supply them however the rest
   # of that Secret is supplied; the chart never creates them.
   secretKeys:

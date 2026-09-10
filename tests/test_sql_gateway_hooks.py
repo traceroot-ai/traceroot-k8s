@@ -170,7 +170,23 @@ def _run_block(script: str, block: str, stub: str, cmd_var: str) -> str:
 class TestRendered:
     # Enabling the gateway now requires the admin access-management override, so
     # every "enabled" render supplies it. Its absence is asserted separately.
-    ENABLED = ("--set", "sqlGateway.enabled=true", "--set", "clickhouse.usersExtraOverrides=x")
+    # A fully enabled gateway. `verify` is opted into explicitly because the chart
+    # defaults it off: the hook runs at pre-upgrade, so leaving it on by default would
+    # let gateway drift fail a release that changed nothing about the gateway.
+    ENABLED = (
+        "--set",
+        "sqlGateway.enabled=true",
+        "--set",
+        "sqlGateway.verify=true",
+        "--set",
+        "clickhouse.usersExtraOverrides=x",
+    )
+    ENABLED_NO_VERIFY = (
+        "--set",
+        "sqlGateway.enabled=true",
+        "--set",
+        "clickhouse.usersExtraOverrides=x",
+    )
 
     @staticmethod
     def _render(*extra: str) -> list:
@@ -194,6 +210,19 @@ class TestRendered:
         names = self._names(self._render(*self.ENABLED))
         assert [n for n in names if _PROVISION in n]
         assert [n for n in names if _VERIFY in n]
+
+    def test_verify_job_is_off_unless_asked_for(self):
+        """`verify` defaults to false, and enabling the gateway must not turn it on.
+
+        The hook is annotated pre-upgrade, so a gateway drift would otherwise fail the
+        whole release and leave Helm in pending-upgrade, including on an upgrade that
+        touched nothing in the gateway. Provisioning must still render.
+        """
+        names = self._names(self._render(*self.ENABLED_NO_VERIFY))
+        assert [n for n in names if _PROVISION in n], "provisioning must still render"
+        assert not [n for n in names if _VERIFY in n], (
+            "verify must stay off until explicitly enabled"
+        )
 
     def test_readonly_credentials_reach_rest_only_when_enabled(self):
         def ro_env(docs):
