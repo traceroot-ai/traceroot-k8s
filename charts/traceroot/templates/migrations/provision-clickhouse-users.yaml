@@ -38,6 +38,11 @@ spec:
           args:
             - |
               set -euo pipefail
+              # The database holding the tables and the views. Templated rather than
+              # hardcoded: the grants must land on the same database the migrations
+              # target, and a chart that assumes "default" silently grants on the
+              # wrong one as soon as clickhouse.database is changed.
+              DB="{{ include "traceroot.sqlGateway.identifier" (dict "name" "database" "value" .Values.sqlGateway.database) }}"
               # An array, not a string: a password containing whitespace or a glob
               # character would otherwise be re-split by the shell before it ever
               # reached the client, and authentication would fail for no visible reason.
@@ -106,8 +111,8 @@ spec:
                     IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';
                 ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}
                     IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';
-                GRANT SELECT ON default.spans  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }};
-                GRANT SELECT ON default.traces TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }};
+                GRANT SELECT ON $DB.spans  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }};
+                GRANT SELECT ON $DB.traces TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }};
                 CREATE SETTINGS PROFILE IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
                     readonly = 1,
                     max_execution_time = {{ .Values.sqlGateway.limits.maxExecutionTime }} CONST,
@@ -126,8 +131,8 @@ spec:
                 ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
                     IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
                     SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
-                GRANT SELECT ON default.spans_public_v1  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
-                GRANT SELECT ON default.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
+                GRANT SELECT ON $DB.spans_public_v1  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
+                GRANT SELECT ON $DB.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
               "
 
               # ClickHouse redacts passwords in query_log, so echoing the

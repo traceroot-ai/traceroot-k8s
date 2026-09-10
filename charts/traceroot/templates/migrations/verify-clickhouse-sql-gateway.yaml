@@ -37,6 +37,11 @@ spec:
           args:
             - |
               set -euo pipefail
+              # The database holding the tables and the views. Templated rather than
+              # hardcoded: the grants must land on the same database the migrations
+              # target, and a chart that assumes "default" silently grants on the
+              # wrong one as soon as clickhouse.database is changed.
+              DB="{{ include "traceroot.sqlGateway.identifier" (dict "name" "database" "value" .Values.sqlGateway.database) }}"
               HOST="{{ include "traceroot.clickhouse.hostname" . }}"
               # Arrays, not strings: a password containing whitespace or a glob would
               # otherwise be re-split by the shell before reaching the client.
@@ -67,7 +72,7 @@ spec:
                 echo "--- definer: $VIEW ---"
                 # Not a bare assignment: under set -e a failed command substitution
                 # would abort here, skipping the remaining checks and the summary.
-                if ! DDL=$("${CH_ADMIN[@]}" --query "SHOW CREATE VIEW default.$VIEW" 2>&1); then
+                if ! DDL=$("${CH_ADMIN[@]}" --query "SHOW CREATE VIEW $DB.$VIEW" 2>&1); then
                   echo "FAIL: could not read the definition of $VIEW:"
                   printf '%s\n' "$DDL"; FAILED=1; continue
                 fi
@@ -89,7 +94,7 @@ spec:
                 # Capture rather than discard: a wrong password, an unreachable host
                 # and a missing view all land here, and only one of them is the grant
                 # problem the bare message used to imply.
-                if ERR=$("${CH_RO[@]}" --query "SELECT count() FROM default.$VIEW(project_id = 'helm-verification-probe')" 2>&1); then
+                if ERR=$("${CH_RO[@]}" --query "SELECT count() FROM $DB.$VIEW(project_id = 'helm-verification-probe')" 2>&1); then
                   echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read $VIEW"
                 else
                   echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} cannot read $VIEW:"
@@ -103,13 +108,13 @@ spec:
               # ever testing anything. Only ClickHouse's ACCESS_DENIED (code 497) counts.
               # LIMIT 0 keeps the probe from scanning a large table when access is open.
               for TABLE in spans traces; do
-                echo "--- read-only user is denied default.$TABLE ---"
-                if ERR=$("${CH_RO[@]}" --query "SELECT * FROM default.$TABLE LIMIT 0" 2>&1); then
-                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read default.$TABLE"; FAILED=1
+                echo "--- read-only user is denied $DB.$TABLE ---"
+                if ERR=$("${CH_RO[@]}" --query "SELECT * FROM $DB.$TABLE LIMIT 0" 2>&1); then
+                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read $DB.$TABLE"; FAILED=1
                 elif printf '%s' "$ERR" | grep -qE 'ACCESS_DENIED|Code: 497'; then
-                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} denied default.$TABLE (ACCESS_DENIED)"
+                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} denied $DB.$TABLE (ACCESS_DENIED)"
                 else
-                  echo "FAIL: probe of default.$TABLE did not return ACCESS_DENIED; denial unproven:"
+                  echo "FAIL: probe of $DB.$TABLE did not return ACCESS_DENIED; denial unproven:"
                   printf '%s\n' "$ERR"; FAILED=1
                 fi
               done
