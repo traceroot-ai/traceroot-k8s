@@ -1,0 +1,163 @@
+{{- if .Values.sqlGateway.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "traceroot.fullname" . }}-provision-clickhouse-users
+  labels:
+    {{- include "traceroot.labels" . | nindent 4 }}
+  annotations:
+    # Same install/upgrade phase as migrate-clickhouse but a lower weight, so the
+    # gateway identities always exist before the migration creates the curated
+    # views, whose DEFINER is the writer user. A missing writer fails the
+    # CREATE VIEW outright, which is the intended, explicit dependency.
+    "helm.sh/hook": post-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    # Retained after success on purpose; see migrate-clickhouse.yaml. This Job's
+    # output is the only record that the identities were provisioned, for readers
+    # who cannot open a ClickHouse session themselves.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 6
+  # Retained after success; bounded by the same knob as the migration job.
+  {{- if not (kindIs "invalid" .Values.migrations.retainFinishedSeconds) }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.retainFinishedSeconds }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "traceroot.selectorLabels" . | nindent 8 }}
+        app: provision-clickhouse-users
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      restartPolicy: Never
+      containers:
+        - name: provision
+          image: "{{ .Values.sqlGateway.image.repository }}:{{ .Values.sqlGateway.image.tag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # An array, not a string: a password containing whitespace or a glob
+              # character would otherwise be re-split by the shell before it ever
+              # reached the client, and authentication would fail for no visible reason.
+              # Password through the environment, not argv: a --password argument is
+              # readable in /proc/<pid>/cmdline for anything that can see the process.
+              export CLICKHOUSE_PASSWORD="${CLICKHOUSE_ADMIN_PASSWORD}"
+              CH=(clickhouse-client --host "{{ include "traceroot.clickhouse.hostname" . }}" --port 9000
+                  --user "{{ .Values.clickhouse.auth.username }}")
+
+              # Passwords are sent as their SHA-256 hash rather than as literals, so no
+              # quote or backslash in a secret can terminate or alter the surrounding
+              # DDL, and the raw value never appears in the statement at all.
+              WRITER_HASH=$(printf '%s' "${SQL_GATEWAY_WRITER_PASSWORD}" | sha256sum | cut -d' ' -f1)
+              RO_HASH=$(printf '%s' "${SQL_GATEWAY_RO_PASSWORD}" | sha256sum | cut -d' ' -f1)
+
+              # This hook can fire before the ClickHouse pod is Ready. The budget stays
+              # well inside Helm's default 5m hook timeout -- matching it would mean the
+              # release aborts before the last retries ever run. The final error is kept
+              # and printed, so a wrong password is distinguishable from a slow start
+              # instead of looking identical for the whole window.
+              READY=""
+              for i in $(seq 1 24); do
+                if POLL_ERR=$("${CH[@]}" --query "SELECT 1" 2>&1); then READY=yes; break; fi
+                echo "waiting for clickhouse ($i/24)"; sleep 5
+              done
+              if [ -z "$READY" ]; then
+                echo "gave up waiting for clickhouse after 120s; last error:"
+                printf '%s\n' "$POLL_ERR"; exit 1
+              fi
+
+              echo "--- clickhouse version ---"
+              "${CH[@]}" --query "SELECT version()"
+
+              # Creating users requires access management, which the stock admin
+              # does not carry unless clickhouse.usersExtraOverrides grants it.
+              # Printed before the DDL so a permissions failure below is
+              # immediately explicable from this log alone.
+              echo "--- grants held by the admin running this job ---"
+              ADMIN_GRANTS=$("${CH[@]}" --query "SHOW GRANTS" 2>&1) || ADMIN_GRANTS=""
+              printf '%s\n' "$ADMIN_GRANTS"
+
+              # The bundled image grants its admin CREATE USER and SET DEFINER, so no
+              # extra configuration is normally needed. An image or an external server
+              # whose admin is narrower would otherwise fail several statements later
+              # with a bare permission error; checked here so the message names both
+              # the cause and the fix.
+              for NEEDED in "CREATE USER" "SET DEFINER"; do
+                if ! printf '%s' "$ADMIN_GRANTS" | grep -qF "$NEEDED"; then
+                  echo "FAIL: the ClickHouse admin does not hold $NEEDED, which provisioning requires."
+                  echo "Set clickhouse.usersExtraOverrides to enable access_management for this"
+                  echo "account, or point the chart at an admin that already has it."
+                  exit 1
+                fi
+              done
+
+              # Idempotent and reconciling: CREATE ... IF NOT EXISTS leaves an
+              # existing user on its old password, so each CREATE is followed by
+              # an unconditional ALTER. Rotating either secret and re-running
+              # this hook is therefore enough to propagate the new password.
+              # Grants are recorded by name, so the read-only grants on the
+              # curated views are accepted here even though the migration that
+              # creates those views has not run yet.
+              echo "--- provisioning identities ---"
+              "${CH[@]}" --multiquery --query "
+                CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}
+                    IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';
+                ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}
+                    IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';
+                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }};
+                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }};
+                CREATE SETTINGS PROFILE IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
+                    readonly = 1,
+                    max_execution_time = {{ .Values.sqlGateway.limits.maxExecutionTime }} CONST,
+                    max_result_rows = {{ .Values.sqlGateway.limits.maxResultRows }} CONST,
+                    max_result_bytes = {{ .Values.sqlGateway.limits.maxResultBytes }} CONST,
+                    max_memory_usage = {{ .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
+                ALTER SETTINGS PROFILE {{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
+                    readonly = 1,
+                    max_execution_time = {{ .Values.sqlGateway.limits.maxExecutionTime }} CONST,
+                    max_result_rows = {{ .Values.sqlGateway.limits.maxResultRows }} CONST,
+                    max_result_bytes = {{ .Values.sqlGateway.limits.maxResultBytes }} CONST,
+                    max_memory_usage = {{ .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
+                CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
+                    IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
+                    SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
+                ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
+                    IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
+                    SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
+                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans_public_v1  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
+                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
+              "
+
+              # ClickHouse redacts passwords in query_log, so echoing the
+              # resulting grants leaks nothing and records what was applied.
+              echo "--- grants: {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} ---"
+              "${CH[@]}" --query "SHOW GRANTS FOR {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}"
+              echo "--- grants: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} ---"
+              "${CH[@]}" --query "SHOW GRANTS FOR {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}"
+              echo "provisioning complete"
+          env:
+            - name: CLICKHOUSE_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.clickhouse.auth.existingSecret }}
+                  key: {{ .Values.clickhouse.auth.existingSecretKey }}
+            - name: SQL_GATEWAY_WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.clickhouse.auth.existingSecret }}
+                  key: {{ .Values.sqlGateway.secretKeys.writerPassword | quote }}
+            - name: SQL_GATEWAY_RO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.clickhouse.auth.existingSecret }}
+                  key: {{ .Values.sqlGateway.secretKeys.readonlyPassword | quote }}
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+{{- end }}

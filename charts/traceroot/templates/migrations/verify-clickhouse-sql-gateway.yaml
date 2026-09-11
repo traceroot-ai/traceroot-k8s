@@ -1,0 +1,169 @@
+{{- if and .Values.sqlGateway.enabled .Values.sqlGateway.verify }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "traceroot.fullname" . }}-verify-clickhouse-sql-gateway
+  labels:
+    {{- include "traceroot.labels" . | nindent 4 }}
+  annotations:
+    # Weighted above migrate-clickhouse so it runs after the curated views exist.
+    # The two properties checked here are the whole point of the definer design
+    # and neither is implied by the provisioning or migration hooks exiting 0:
+    # a view could be created with the wrong definer, and the read-only user
+    # could still reach the physical tables. Both are asserted, so an upgrade
+    # that silently loses the isolation fails the release instead of passing.
+    "helm.sh/hook": post-install,pre-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 2
+  # Retained after success; bounded by the same knob as the migration job.
+  {{- if not (kindIs "invalid" .Values.migrations.retainFinishedSeconds) }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.retainFinishedSeconds }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "traceroot.selectorLabels" . | nindent 8 }}
+        app: verify-clickhouse-sql-gateway
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      restartPolicy: Never
+      containers:
+        - name: verify
+          image: "{{ .Values.sqlGateway.image.repository }}:{{ .Values.sqlGateway.image.tag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              HOST="{{ include "traceroot.clickhouse.hostname" . }}"
+              # Arrays, not strings: a password containing whitespace or a glob would
+              # otherwise be re-split by the shell before reaching the client.
+              # Passwords through the environment, not argv, which is world-readable
+              # in /proc for anything sharing a namespace. The admin is exported; the
+              # read-only user is set per call, since both clients run in this script.
+              export CLICKHOUSE_PASSWORD="${CLICKHOUSE_ADMIN_PASSWORD}"
+              CH_ADMIN=(clickhouse-client --host "$HOST" --port 9000
+                        --user "{{ .Values.clickhouse.auth.username }}")
+              # No per-query settings here on purpose. This user runs under a
+              # readonly = 1 profile whose caps are CONST, so the server rejects any
+              # attempt to set one -- including from the command line. Passing a bound
+              # would make every probe below fail with a settings error instead of
+              # running, which reads as the isolation being broken. The cap is already
+              # enforced by the profile; LIMIT 0 keeps the probe itself cheap.
+              CH_RO=(env CLICKHOUSE_PASSWORD="${SQL_GATEWAY_RO_PASSWORD}"
+                     clickhouse-client --host "$HOST" --port 9000
+                     --user "{{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}")
+              FAILED=0
+
+              echo "--- clickhouse version ---"
+              "${CH_ADMIN[@]}" --query "SELECT version()"
+
+              # The definer is what lets the read-only user read the views
+              # without holding any grant on the tables underneath. If a view
+              # were created without it, isolation would rest on nothing.
+              for VIEW in spans_public_v1 traces_public_v1; do
+                echo "--- definer: $VIEW ---"
+                # Not a bare assignment: under set -e a failed command substitution
+                # would abort here, skipping the remaining checks and the summary.
+                if ! DDL=$("${CH_ADMIN[@]}" --query "SHOW CREATE VIEW {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$VIEW" 2>&1); then
+                  echo "FAIL: could not read the definition of $VIEW:"
+                  printf '%s\n' "$DDL"; FAILED=1; continue
+                fi
+                printf '%s\n' "$DDL"
+                # Anchored on the trailing clause. A bare name match would accept a
+                # different, longer account -- sql_gateway_writer_admin contains
+                # sql_gateway_writer -- which is exactly the substitution this exists
+                # to catch. -F because the account name is operator-supplied.
+                if printf '%s' "$DDL" | grep -qF "DEFINER = {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} SQL SECURITY DEFINER"; then
+                  echo "OK: $VIEW is owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}"
+                else
+                  echo "FAIL: $VIEW is not owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}"; FAILED=1
+                fi
+              done
+
+              # The curated views must stay readable by the gateway user.
+              for VIEW in spans_public_v1 traces_public_v1; do
+                echo "--- read-only user reads $VIEW ---"
+                # Capture rather than discard: a wrong password, an unreachable host
+                # and a missing view all land here, and only one of them is the grant
+                # problem the bare message used to imply.
+                if ERR=$("${CH_RO[@]}" --query "SELECT count() FROM {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$VIEW(project_id = 'helm-verification-probe')" 2>&1); then
+                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read $VIEW"
+                else
+                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} cannot read $VIEW:"
+                  printf '%s\n' "$ERR"; FAILED=1
+                fi
+              done
+
+              # And must never reach the physical tables. Denial has to be proven, not
+              # inferred from failure: a timeout, a bad password or an unreachable host
+              # all fail too, and treating those as success would let this pass without
+              # ever testing anything. Only ClickHouse's ACCESS_DENIED (code 497) counts.
+              # LIMIT 0 keeps the probe from scanning a large table when access is open.
+              for TABLE in spans traces; do
+                echo "--- read-only user is denied {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE ---"
+                if ERR=$("${CH_RO[@]}" --query "SELECT * FROM {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE LIMIT 0" 2>&1); then
+                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE"; FAILED=1
+                elif printf '%s' "$ERR" | grep -qE 'ACCESS_DENIED|Code: 497'; then
+                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} denied {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE (ACCESS_DENIED)"
+                else
+                  echo "FAIL: probe of {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE did not return ACCESS_DENIED; denial unproven:"
+                  printf '%s\n' "$ERR"; FAILED=1
+                fi
+              done
+
+              # Renaming either account leaves the previous one live, with its password
+              # and its grants, and uninstalling the release leaves both behind entirely.
+              # Neither is safe to clean up from a hook -- this runs before the new pods
+              # roll, so dropping an account would cut off every still-running one.
+              # Reported instead, so an orphan is a line in the release log rather than
+              # something nobody sees. Deliberately not a failure.
+              #
+              # Both halves are scanned. The curated views are where a stale read-only
+              # account shows up; the physical tables are where a stale WRITER does, and
+              # that one matters more -- it can read the raw rows, including the blobs the
+              # curated views omit. A scan of the views alone would never see it.
+              echo "--- accounts with SELECT on the gateway's tables and views ---"
+              ORPHANS=$("${CH_ADMIN[@]}" --query "
+                SELECT DISTINCT user_name, table FROM system.grants
+                WHERE database = '{{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}'
+                  AND access_type = 'SELECT'
+                  AND user_name IS NOT NULL
+                  AND (
+                        (table IN ('spans_public_v1', 'traces_public_v1') AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}')
+                     OR (table IN ('spans', 'traces')                     AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}')
+                  )
+              " 2>&1) || ORPHANS=""
+              if [ -n "$ORPHANS" ]; then
+                echo "WARNING: accounts other than {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} and {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} hold gateway grants."
+                echo "They are not created or removed by this release:"
+                printf '%s\n' "$ORPHANS"
+              else
+                echo "OK: only the configured gateway accounts hold these grants"
+              fi
+
+              if [ "$FAILED" -ne 0 ]; then
+                echo "sql gateway verification FAILED"; exit 1
+              fi
+              echo "sql gateway verification passed"
+          env:
+            - name: CLICKHOUSE_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.clickhouse.auth.existingSecret }}
+                  key: {{ .Values.clickhouse.auth.existingSecretKey }}
+            - name: SQL_GATEWAY_RO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.clickhouse.auth.existingSecret }}
+                  key: {{ .Values.sqlGateway.secretKeys.readonlyPassword | quote }}
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+{{- end }}

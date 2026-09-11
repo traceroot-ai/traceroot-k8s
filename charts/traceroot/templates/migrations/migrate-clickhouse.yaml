@@ -40,16 +40,29 @@ spec:
           args:
             - |
               set -e
-              DSN="clickhouse://{{ .Values.clickhouse.auth.username }}:${CLICKHOUSE_PASSWORD}@{{ include "traceroot.clickhouse.hostname" . }}:9000/default"
-              goose -dir /migrations clickhouse "$DSN" up
+              # Percent-encode every byte of the password. A password holding a
+              # URL-reserved character otherwise breaks DSN parsing outright, and
+              # -v stops od collapsing a repeated 16-byte block to `*`, which would
+              # silently produce the wrong password.
+              PW=$(printf '%s' "${CLICKHOUSE_PASSWORD}" | od -An -v -tx1 | tr -d '\n ' | sed 's/../%&/g')
+              # The DSN travels in the environment, never in argv: /proc/<pid>/cmdline is
+              # world-readable, /proc/<pid>/environ is not. Exported here rather than in the
+              # container's env: block, which would put it back in the rendered manifest.
+              export GOOSE_DRIVER=clickhouse
+              export GOOSE_DBSTRING="clickhouse://{{ .Values.clickhouse.auth.username }}:${PW}@{{ include "traceroot.clickhouse.hostname" . }}:9000/${CLICKHOUSE_DATABASE}"
+              goose -dir /migrations up
               # Exit 0 from `up` only says nothing errored. Print the resulting
               # state so the log shows which migrations are actually applied.
               # Never allowed to fail the hook: the schema is already applied by this
               # point, and aborting the release over a read-only status query would
               # report a failed migration for a migration that succeeded.
               echo "--- migration state after apply ---"
-              goose -dir /migrations clickhouse "$DSN" status || echo "(status query failed; the migration above still succeeded)"
+              goose -dir /migrations status || echo "(status query failed; the migration above still succeeded)"
           env:
+            # The views this Job creates must land in the same database the gateway
+            # hooks grant on and the app reads from.
+            - name: CLICKHOUSE_DATABASE
+              value: {{ .Values.clickhouse.database | quote }}
             - name: CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef:

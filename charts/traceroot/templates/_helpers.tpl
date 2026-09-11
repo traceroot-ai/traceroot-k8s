@@ -47,3 +47,18 @@ in the middle of an upgrade, with an error that says nothing about which value.
 ttlSecondsAfterFinished: {{ int64 $ttl }}
 {{- end -}}
 {{- end }}
+
+{{/*
+A ClickHouse identifier that is safe to splice into DDL and into a shell command
+line. Both happen in the SQL-gateway hooks, so anything outside this character set
+is rejected at render time rather than becoming a syntax error at CREATE USER, or
+extra client flags that silently change which account the verification runs as.
+*/}}
+{{- define "traceroot.sqlGateway.identifier" -}}
+{{- $name := .name -}}
+{{- $value := .value -}}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $value) -}}
+{{- fail (printf "sqlGateway.%s must match ^[A-Za-z_][A-Za-z0-9_]*$ (it is used unquoted in ClickHouse DDL and in a shell command), got %q" $name $value) -}}
+{{- end -}}
+{{- $value -}}
+{{- end }}
