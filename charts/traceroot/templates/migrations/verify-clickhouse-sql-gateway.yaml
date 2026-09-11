@@ -128,7 +128,7 @@ spec:
               echo "--- accounts with SELECT on the gateway's tables and views ---"
               ORPHANS=$("${CH_ADMIN[@]}" --query "
                 SELECT DISTINCT user_name, table FROM system.grants
-                WHERE database = 'default'
+                WHERE database = '{{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}'
                   AND access_type = 'SELECT'
                   AND user_name IS NOT NULL
                   AND (

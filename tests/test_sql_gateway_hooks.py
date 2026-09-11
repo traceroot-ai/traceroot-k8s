@@ -19,6 +19,7 @@ installed.
 """
 
 import os
+import re
 import shutil
 import tempfile
 import subprocess
@@ -210,6 +211,50 @@ class TestRendered:
         names = self._names(self._render(*self.ENABLED))
         assert [n for n in names if _PROVISION in n]
         assert [n for n in names if _VERIFY in n]
+
+    def test_one_database_reaches_every_consumer(self):
+        """Grants, views and the app must all name the same database.
+
+        The migrate Job creates the definer-owned views, the provisioning hook grants on
+        them, the verify hook probes them, and the Deployments read them. A consumer left
+        on a hardcoded `default` does not fail: the grants simply land on a different
+        database from the views, and the gateway returns nothing with no error anywhere.
+        """
+        out = subprocess.run(
+            [
+                "helm", "template", "traceroot", _CHART,
+                "--set", "ingress.host=example.com",
+                "--set", "sqlGateway.enabled=true",
+                "--set", "sqlGateway.verify=true",
+                "--set", "clickhouse.usersExtraOverrides=x",
+                "--set", "clickhouse.database=analytics",
+            ],
+            capture_output=True, text=True,
+        )
+        assert out.returncode == 0, out.stderr
+        rendered = out.stdout
+        assert "GRANT SELECT ON analytics." in rendered, "provisioning grants on the wrong database"
+        assert "SHOW CREATE VIEW analytics." in rendered, "verify probes the wrong database"
+        assert "database = 'analytics'" in rendered, "the orphan-grant scan is still on default"
+        assert rendered.count('value: "analytics"') >= 4, "a Deployment or the migrate Job is hardcoded"
+        assert "9000/default" not in rendered, "the migration DSN is hardcoded to default"
+
+    def test_migration_dsn_never_reaches_argv(self):
+        """`/proc/<pid>/cmdline` is world-readable; `/proc/<pid>/environ` is not.
+
+        The migration runs as the one account holding access management, so its password
+        landing in a process argument is an escalation path for anyone who can read the
+        host's process list while the Job runs.
+        """
+        out = subprocess.run(
+            ["helm", "template", "traceroot", _CHART, "--set", "ingress.host=example.com"],
+            capture_output=True, text=True,
+        )
+        assert out.returncode == 0, out.stderr
+        assert not re.search(r"goose[^\n]*clickhouse://", out.stdout), (
+            "the DSN is passed to goose as an argument"
+        )
+        assert "GOOSE_DBSTRING=" in out.stdout, "the DSN should travel in the environment"
 
     def test_verify_job_is_off_unless_asked_for(self):
         """`verify` defaults to false, and enabling the gateway must not turn it on.
