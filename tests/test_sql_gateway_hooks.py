@@ -255,6 +255,12 @@ class TestRendered:
             "the DSN is passed to goose as an argument"
         )
         assert "GOOSE_DBSTRING=" in out.stdout, "the DSN should travel in the environment"
+        # Every goose call must rely on the exported config. A leftover positional
+        # driver/DSN pair reads an unset variable and connects to nothing, and the
+        # status call is deliberately allowed to fail, so it would break in silence.
+        for call in re.findall(r"goose -dir /migrations[^\n|]*", out.stdout):
+            assert "clickhouse" not in call, f"stale positional driver/DSN in: {call.strip()}"
+            assert "$DSN" not in call, f"stale DSN reference in: {call.strip()}"
 
     def test_verify_job_is_off_unless_asked_for(self):
         """`verify` defaults to false, and enabling the gateway must not turn it on.
