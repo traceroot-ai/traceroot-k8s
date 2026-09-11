@@ -57,7 +57,7 @@ spec:
               # point, and aborting the release over a read-only status query would
               # report a failed migration for a migration that succeeded.
               echo "--- migration state after apply ---"
-              goose -dir /migrations clickhouse "$DSN" status || echo "(status query failed; the migration above still succeeded)"
+              goose -dir /migrations status || echo "(status query failed; the migration above still succeeded)"
           env:
             # The views this Job creates must land in the same database the gateway
             # hooks grant on and the app reads from.
