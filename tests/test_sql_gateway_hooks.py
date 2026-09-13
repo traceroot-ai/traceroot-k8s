@@ -239,6 +239,37 @@ class TestRendered:
         assert rendered.count('value: "analytics"') >= 4, "a Deployment or the migrate Job is hardcoded"
         assert "9000/default" not in rendered, "the migration DSN is hardcoded to default"
 
+    def test_view_probes_pass_the_time_range(self):
+        """Every rendered call to a public view must pass start_time and end_time.
+
+        The views declare a half-open time range alongside the project. A declared
+        parameter the caller omits fails with Code 456 rather than reading unbounded, so a
+        probe that passes only project_id breaks verification the moment the views gain
+        the range. Matched on the call shape, not the view name, because the hook builds
+        the name from a shell variable.
+        """
+        out = subprocess.run(
+            ["helm", "template", "traceroot", _CHART, "--set", "ingress.host=example.com", *self.ENABLED],
+            capture_output=True, text=True,
+        )
+        assert out.returncode == 0, out.stderr
+        # Balanced scan rather than a regex: the bounds themselves contain parentheses,
+        # so `[^)]*` would stop inside toDateTime64(...) and never see end_time.
+        calls = []
+        for m in re.finditer(r"\(project_id\s*=", out.stdout):
+            depth, i = 0, m.start()
+            while i < len(out.stdout):
+                depth += {"(": 1, ")": -1}.get(out.stdout[i], 0)
+                if depth == 0:
+                    break
+                i += 1
+            calls.append(out.stdout[m.start() : i + 1])
+        assert calls, "expected the verify hook to call at least one public view"
+        for call in calls:
+            assert "start_time" in call and "end_time" in call, (
+                f"view call omits the time range and would fail with Code 456: {call}"
+            )
+
     def test_migration_dsn_never_reaches_argv(self):
         """`/proc/<pid>/cmdline` is world-readable; `/proc/<pid>/environ` is not.
 

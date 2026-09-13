@@ -84,12 +84,16 @@ spec:
               done
 
               # The curated views must stay readable by the gateway user.
+              # The views take a half-open time range as well as the project. A declared
+              # parameter the caller omits is Code 456, not an unbounded read, so the probe
+              # passes open bounds. Passing them is also harmless against a view that does
+              # not declare them yet: undeclared parameters are ignored.
               for VIEW in spans_public_v1 traces_public_v1; do
                 echo "--- read-only user reads $VIEW ---"
                 # Capture rather than discard: a wrong password, an unreachable host
                 # and a missing view all land here, and only one of them is the grant
                 # problem the bare message used to imply.
-                if ERR=$("${CH_RO[@]}" --query "SELECT count() FROM {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$VIEW(project_id = 'helm-verification-probe')" 2>&1); then
+                if ERR=$("${CH_RO[@]}" --query "SELECT count() FROM {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$VIEW(project_id = 'helm-verification-probe', start_time = toDateTime64('1970-01-01 00:00:00', 3), end_time = toDateTime64('2099-01-01 00:00:00', 3))" 2>&1); then
                   echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read $VIEW"
                 else
                   echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} cannot read $VIEW:"
