@@ -405,6 +405,27 @@ class TestRendered:
         assert "spans_public_v1" in block and "traces_public_v1" in block
         assert "'spans', 'traces'" in block, "physical tables are not scanned"
 
+    @pytest.mark.parametrize(
+        "name,stub,expect",
+        [
+            ("scan failed", 'echo "Code: 516. Authentication failed" >&2; return 4;', "WARNING: could not read system.grants"),
+            ("no orphans", "return 0;", "OK: only the configured gateway accounts"),
+            ("orphan found", 'echo "old_ro\tspans_public_v1"; return 0;', "WARNING: accounts other than"),
+        ],
+    )
+    def test_orphan_scan_never_reports_ok_when_it_did_not_run(self, name, stub, expect):
+        """The scan is informational, so a failure must not fail the Job, but a query
+        that never ran must not print the all-clear either."""
+        script = self._verify_script()
+        start = script.index('echo "--- accounts with SELECT')
+        lines = script[start:].splitlines()
+        end = next(n for n, l in enumerate(lines) if l.strip() == "fi")
+        out = _run_block(script, "\n".join(lines[: end + 1]), stub, "CH_ADMIN")
+        assert expect in out, "%s: %s" % (name, out)
+        assert "FAILED=0" in out, "%s: the informational scan failed the Job: %s" % (name, out)
+        if name == "scan failed":
+            assert "OK:" not in out, "a scan that never ran reported the all-clear: %s" % out
+
     def test_verify_toggle_actually_gates_the_verification_job(self):
         names = self._names(self._render(*self.ENABLED, "--set", "sqlGateway.verify=false"))
         assert not [n for n in names if _VERIFY in n], "verify=false still rendered the Job"

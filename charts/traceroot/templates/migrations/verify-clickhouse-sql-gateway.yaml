@@ -130,7 +130,7 @@ spec:
               # that one matters more -- it can read the raw rows, including the blobs the
               # curated views omit. A scan of the views alone would never see it.
               echo "--- accounts with SELECT on the gateway's tables and views ---"
-              ORPHANS=$("${CH_ADMIN[@]}" --query "
+              if ! ORPHANS=$("${CH_ADMIN[@]}" --query "
                 SELECT DISTINCT user_name, table FROM system.grants
                 WHERE database = '{{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}'
                   AND access_type = 'SELECT'
@@ -139,8 +139,12 @@ spec:
                         (table IN ('spans_public_v1', 'traces_public_v1') AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}')
                      OR (table IN ('spans', 'traces')                     AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}')
                   )
-              " 2>&1) || ORPHANS=""
-              if [ -n "$ORPHANS" ]; then
+              " 2>&1); then
+                # Still not a failure, for the reason above, but not an OK either: a scan
+                # that did not run found nothing only because it looked at nothing.
+                echo "WARNING: could not read system.grants, so orphaned gateway accounts were not checked:"
+                printf '%s\n' "$ORPHANS"
+              elif [ -n "$ORPHANS" ]; then
                 echo "WARNING: accounts other than {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} and {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} hold gateway grants."
                 echo "They are not created or removed by this release:"
                 printf '%s\n' "$ORPHANS"
