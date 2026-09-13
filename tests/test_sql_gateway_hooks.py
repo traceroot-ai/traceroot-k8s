@@ -125,11 +125,13 @@ def test_retention_default_is_positive_and_tunable():
 
 def test_readonly_client_sends_no_per_query_settings():
     """A readonly = 1 user cannot set them; the server rejects the query outright."""
+    # The whole template, not just the CH_RO array: a setting is naturally added on
+    # the invocation line, `"${CH_RO[@]}" --max_memory_usage 100 --query ...`, which an
+    # array-only scan never sees. None of these names belong anywhere in this hook; the
+    # CONST caps live in the provisioning template's settings profile.
     text = _template_text(_VERIFY)
-    ro = text[text.index("CH_RO=("):]
-    ro = ro[: ro.index(")")]
     for setting in ("max_execution_time", "max_result_rows", "max_result_bytes", "max_memory_usage"):
-        assert setting not in ro, "%s cannot be set by the read-only user" % setting
+        assert setting not in text, "%s cannot be set by the read-only user" % setting
 
 
 
