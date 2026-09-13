@@ -1,0 +1,10 @@
+# Python bytecode and test caches. The chart's guard tests run from this repo, so
+# these appear on any machine that runs them and have been committed by accident
+# before.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local virtualenvs
+.venv/
+venv/
