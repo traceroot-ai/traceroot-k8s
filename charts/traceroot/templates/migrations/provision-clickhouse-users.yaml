@@ -128,7 +128,7 @@ spec:
               # failing on that would abort the release for a server that provisions
               # perfectly well. The statements below carry the real verdict.
               for NEEDED in "CREATE USER" "SET DEFINER"; do
-                if ! printf '%s' "$ADMIN_GRANTS" | grep -qF "$NEEDED"; then
+                if ! grep -qF "$NEEDED" <<<"$ADMIN_GRANTS"; then
                   echo "note: $NEEDED is not listed directly for this account; it may still hold it through a role."
                 fi
               done
@@ -187,6 +187,38 @@ spec:
                 GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans_public_v1  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
                 GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
               " | "${CH[@]}" --multiquery
+              {{- end }}
+
+              {{- if .Values.sqlGateway.enabled }}
+              # The grants above are additive, so an account that already existed keeps
+              # whatever it was carrying: a stale SELECT on another database, a role
+              # granted by hand, FILE or URL. Customer SQL runs as this account, so the
+              # intended state is not "has the two view grants" but "has these and
+              # nothing else". Privileges and role grants are stripped first, since
+              # REVOKE ALL PRIVILEGES leaves role membership untouched.
+              echo "--- converging {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} on exactly its two grants ---"
+              REVOKES=$("${CH[@]}" --query "
+                SELECT concat('REVOKE ', granted_role_name, ' FROM {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};')
+                FROM system.role_grants WHERE user_name = '{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}'
+                FORMAT TSVRaw" 2>&1) || REVOKES=""
+              printf '%s\n' "
+                REVOKE ALL PRIVILEGES ON *.* FROM {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
+                ${REVOKES}
+                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans_public_v1  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
+                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
+              " | "${CH[@]}" --multiquery
+
+              # Asserted here rather than left to the verification hook, which is off by
+              # default: a convergence that did not converge must not pass quietly.
+              RO_GRANTS=$("${CH[@]}" --query "SHOW GRANTS FOR {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}" 2>&1)
+              EXTRA=$(printf '%s\n' "$RO_GRANTS" | grep -v '^[[:space:]]*$' \
+                | grep -vxF "GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}" \
+                | grep -vxF "GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}" || true)
+              if [ -n "$EXTRA" ]; then
+                echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} still holds grants beyond the two curated views:"
+                printf '%s\n' "$EXTRA"
+                exit 1
+              fi
               {{- end }}
 
               # ClickHouse redacts passwords in query_log, so echoing the

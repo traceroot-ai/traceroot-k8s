@@ -591,21 +591,46 @@ class TestRendered:
             )
             assert ttl == 2592000, "%s lost the configured value: %r" % (name, ttl)
 
-    def test_provisioning_grants_exactly_the_four_expected_selects(self):
+    @pytest.mark.parametrize("database", ["default", "analytics"])
+    def test_provisioning_grants_exactly_the_four_expected_selects(self, database):
         """The suite's headline claim: the read-only user holds no grant on the raw tables.
 
         Every check elsewhere runs against a stubbed client and proves the hook's
         branching, never what provisioning actually grants. Adding
         `GRANT SELECT ON <db>.spans TO <ro>` to the template passed the whole suite.
         """
-        script = self._provision_script(*self.ENABLED)
+        script = self._provision_script(*self.ENABLED, "--set", "clickhouse.database=%s" % database)
         granted = set(re.findall(r"GRANT SELECT ON (\S+)\s+TO (\S+?);", script))
         assert granted == {
-            ("default.spans", "sql_gateway_writer"),
-            ("default.traces", "sql_gateway_writer"),
-            ("default.spans_public_v1", "sql_gateway_ro"),
-            ("default.traces_public_v1", "sql_gateway_ro"),
+            ("%s.spans" % database, "sql_gateway_writer"),
+            ("%s.traces" % database, "sql_gateway_writer"),
+            ("%s.spans_public_v1" % database, "sql_gateway_ro"),
+            ("%s.traces_public_v1" % database, "sql_gateway_ro"),
         }, "provisioning grants changed: %s" % sorted(granted)
+        assert "default." not in script.replace("SET DEFAULT", "") or database == "default", (
+            "a grant or probe is pinned to the default database"
+        )
+
+    @pytest.mark.parametrize("database", ["default", "analytics"])
+    def test_provisioning_converges_the_readonly_account_on_those_grants(self, database):
+        """Grants are additive, so an account that already existed keeps what it had.
+
+        Customer SQL runs as this account, so the intended state is not "has the two
+        view grants" but "has these and nothing else". Asserted in provisioning rather
+        than only in verification, which is off by default.
+        """
+        script = self._provision_script(*self.ENABLED, "--set", "clickhouse.database=%s" % database)
+        assert "REVOKE ALL PRIVILEGES ON *.* FROM sql_gateway_ro" in script
+        assert "FROM system.role_grants" in script, (
+            "REVOKE ALL PRIVILEGES leaves role membership untouched"
+        )
+        assert 'GRANT SELECT ON %s.spans_public_v1 TO sql_gateway_ro"' % database in script, (
+            "the convergence check must name the configured database"
+        )
+        assert "still holds grants beyond the two curated views" in script
+        assert "exit 1" in script[script.index("still holds grants"):][:300], (
+            "a convergence that did not converge must fail the hook"
+        )
 
     def test_the_readonly_account_is_given_the_capped_profile(self):
         """Dropping CONST, or the SETTINGS PROFILE clause, left the suite green.

@@ -74,11 +74,15 @@ spec:
                   printf '%s\n' "$DDL"; FAILED=1; continue
                 fi
                 printf '%s\n' "$DDL"
+                # A herestring rather than a pipe: grep -q exits at the first match, and
+                # under pipefail a producer that has not finished writing takes SIGPIPE
+                # and fails the whole pipeline, turning a correct definer into a
+                # verification failure once the definition is larger than a pipe buffer.
                 # Anchored on the trailing clause. A bare name match would accept a
                 # different, longer account -- sql_gateway_writer_admin contains
                 # sql_gateway_writer -- which is exactly the substitution this exists
                 # to catch. -F because the account name is operator-supplied.
-                if printf '%s' "$DDL" | grep -qF "DEFINER = {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} SQL SECURITY DEFINER"; then
+                if grep -qF "DEFINER = {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} SQL SECURITY DEFINER" <<<"$DDL"; then
                   echo "OK: $VIEW is owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}"
                 else
                   echo "FAIL: $VIEW is not owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}"; FAILED=1
@@ -112,7 +116,7 @@ spec:
                 echo "--- read-only user is denied {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE ---"
                 if ERR=$("${CH_RO[@]}" --query "SELECT * FROM {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE LIMIT 0" 2>&1); then
                   echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE"; FAILED=1
-                elif printf '%s' "$ERR" | grep -qE 'ACCESS_DENIED|Code: 497'; then
+                elif grep -qE 'ACCESS_DENIED|Code: 497' <<<"$ERR"; then
                   echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} denied {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE (ACCESS_DENIED)"
                 else
                   echo "FAIL: probe of {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE did not return ACCESS_DENIED; denial unproven:"
@@ -189,7 +193,7 @@ spec:
               if RAISED=$("${CH_RO[@]}" --query "SELECT 1 SETTINGS max_result_rows = 99999999" 2>&1); then
                 echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} raised max_result_rows for one query; the caps are not enforced"
                 FAILED=1
-              elif printf '%s' "$RAISED" | grep -qE 'READONLY|Code: 164|SETTING_CONSTRAINT_VIOLATION|Code: 452'; then
+              elif grep -qE 'READONLY|Code: 164|SETTING_CONSTRAINT_VIOLATION|Code: 452' <<<"$RAISED"; then
                 echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} cannot raise max_result_rows"
               else
                 echo "FAIL: the override of max_result_rows failed for another reason, so the cap is unproven:"
