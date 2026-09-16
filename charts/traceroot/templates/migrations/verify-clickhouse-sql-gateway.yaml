@@ -119,6 +119,29 @@ spec:
                 fi
               done
 
+              # Everything above tests what the account can reach. This tests what it
+              # holds, which is not the same question: the orphan scan below asks who
+              # ELSE has grants on the gateway's tables and would never notice this
+              # account itself gaining FILE, URL, REMOTE or SELECT on another database.
+              # Compared as an exact set, because "no grant beyond these two" is the
+              # property, and any extra line is a widening whoever made it can explain.
+              echo "--- read-only user holds only the two view grants ---"
+              if ! RO_GRANTS=$("${CH_ADMIN[@]}" --query "SHOW GRANTS FOR {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}" 2>&1); then
+                echo "FAIL: could not read the grants held by {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}:"
+                printf '%s\n' "$RO_GRANTS"; FAILED=1
+              else
+                printf '%s\n' "$RO_GRANTS"
+                UNEXPECTED=$(printf '%s\n' "$RO_GRANTS" | grep -v '^[[:space:]]*$' \
+                  | grep -vxF "GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}" \
+                  | grep -vxF "GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}" || true)
+                if [ -n "$UNEXPECTED" ]; then
+                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} holds grants beyond the two curated views:"
+                  printf '%s\n' "$UNEXPECTED"; FAILED=1
+                else
+                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} holds only SELECT on the two curated views"
+                fi
+              fi
+
               # The settings profile is the other half of the design, and nothing above
               # would notice its absence: an account whose profile was detached still
               # reads the views, is still refused the physical tables, and passes every

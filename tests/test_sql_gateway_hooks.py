@@ -201,6 +201,7 @@ def test_passwords_are_not_embedded_as_sql_literals():
     for var in ("SQL_GATEWAY_WRITER_PASSWORD", "SQL_GATEWAY_RO_PASSWORD"):
         assert "BY '${%s}'" % var not in text
         assert "BY '${%s:-}'" % var not in text
+    assert "${WRITER_HASH}" in text and "${RO_HASH}" in text
 
 
 @pytest.mark.parametrize("name", [_PROVISION, _VERIFY])
@@ -285,65 +286,69 @@ class TestRendered:
                 "%s belongs to the gateway and must not be provisioned when it is off" % absent
             )
 
-    def test_the_writer_password_is_optional_only_when_the_gateway_is_off(self):
-        """Off, the key is normally absent and a required reference would stop the pod.
+    def test_no_writer_password_is_ever_read_or_stored(self):
+        """Nothing authenticates as the writer, so a stored password buys nothing.
 
-        On, it is part of the documented contract, and an absent key should fail
-        the release rather than quietly provision a generated password that the
-        application does not hold.
+        The curated views are SQL SECURITY DEFINER: the body runs under the writer's
+        grants and its password is never presented. Keeping one in a Secret would be a
+        standing credential able to read every project's raw rows, including the
+        columns the curated views deliberately omit. It is generated and discarded.
         """
-        def writer_ref(docs):
-            for d in docs:
-                if _PROVISION not in d.get("metadata", {}).get("name", ""):
-                    continue
-                for e in d["spec"]["template"]["spec"]["containers"][0]["env"]:
-                    if e["name"] == "SQL_GATEWAY_WRITER_PASSWORD":
-                        return e["valueFrom"]["secretKeyRef"]
-            raise AssertionError("writer password reference did not render")
+        text = _template_text(_PROVISION)
+        assert "SQL_GATEWAY_WRITER_PASSWORD" not in text, (
+            "the writer password must not be read from the environment"
+        )
+        assert "writerPassword" not in text, "no Secret key should be referenced for the writer"
+        assert "/dev/urandom" in text, "the writer password must be generated"
 
-        assert writer_ref(self._render()).get("optional") is True
-        assert writer_ref(self._render(*self.ENABLED)).get("optional") is not True
+        for enabled in ([], ["--set", "sqlGateway.enabled=true"]):
+            env = {
+                e["name"]
+                for d in self._render(*enabled)
+                if _PROVISION in d.get("metadata", {}).get("name", "")
+                for e in d["spec"]["template"]["spec"]["containers"][0]["env"]
+            }
+            assert "SQL_GATEWAY_WRITER_PASSWORD" not in env, (
+                "enabled=%s still mounts a writer password" % bool(enabled)
+            )
 
-    @pytest.mark.parametrize(
-        "setup,expect_alter",
-        [
-            ("SQL_GATEWAY_WRITER_PASSWORD=s3cretvaluehere", True),
-            ("SQL_GATEWAY_WRITER_PASSWORD=''", False),
-            ("unset SQL_GATEWAY_WRITER_PASSWORD", False),
-        ],
-        ids=["supplied", "empty", "unset"],
-    )
-    def test_a_generated_writer_password_never_replaces_a_real_one(self, setup, expect_alter):
-        """The reconciling ALTER runs only for a password someone supplied.
+    def test_the_writer_is_left_alone_when_it_already_exists(self):
+        """So an operator who provisions it themselves needs no privilege to create users.
 
-        Without that condition every gateway-off upgrade would rotate the writer to
-        a fresh random password. Harmless while the views are definer-owned, but it
-        would silently break the moment a supplied password arrives out of order.
+        Without this, the hook fails the release on any server whose admin cannot
+        create users, even when the account it wanted is already there.
         """
         script = self._provision_script()
-        start = script.index("WRITER_HASH=")
-        block = script[start : script.index("\nfi", start) + 3]
-        harness = "\n".join([
-            "set -uo pipefail",
-            # sha256sum is Linux-only and the digest is not what is under test. This
-            # stub keeps the input visible, so a generated password is distinguishable
-            # from the hash of an empty one.
-            "sha256sum() { printf '%s  -\\n' \"$(cat | tr -cd '[:alnum:]' | cut -c1-16)\"; }",
-            setup,
-            block,
-            'echo "ALTER=[${WRITER_ALTER}]"',
-            'echo "HASH=[${WRITER_HASH}]"',
-        ])
-        out = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, check=True).stdout
-        alter = re.search(r"ALTER=\[(.*)\]", out).group(1)
-        digest = re.search(r"HASH=\[(.*)\]", out).group(1)
-        assert digest, "the writer must always end up with a password"
-        if expect_alter:
-            assert alter.startswith("ALTER USER sql_gateway_writer IDENTIFIED")
-            assert digest == "s3cretvaluehere", "the supplied password was not the one hashed"
-        else:
-            assert alter == "", "an unsupplied password must not overwrite an existing one"
-            assert digest != "", "the generated branch did not run"
+        assert "SELECT count() FROM system.users WHERE name = 'sql_gateway_writer'" in script
+        assert 'if [ -n "$NEED_CREATE" ]; then' in script
+        assert "already exists; leaving its password untouched" in script
+
+    def test_the_privilege_precheck_is_advisory_not_fatal(self):
+        """An admin holding these through a granted role prints only the role.
+
+        A literal scan cannot see that, and failing on it aborts the release for a
+        server that provisions perfectly well. The verdict belongs to the statement
+        that actually runs.
+        """
+        script = self._provision_script()
+        start = script.index('for NEEDED in "CREATE USER" "SET DEFINER"')
+        block = script[start : script.index("done", start)]
+        assert "exit 1" not in block, "the precheck must not fail the release"
+        assert "FAIL" not in block, "the precheck must not report a failure it cannot know"
+        assert "note:" in block
+        # and the statement that can know carries the guidance the precheck used to
+        assert "could not create sql_gateway_writer" in script
+        assert "usersExtraOverrides" in script
+
+    def test_a_missing_database_fails_before_the_grants_land_on_nothing(self):
+        """GRANT on a database that does not exist succeeds and is recorded.
+
+        The migration then fails with UNKNOWN_DATABASE, several steps away from the
+        mistyped value that caused it.
+        """
+        script = self._provision_script()
+        assert "FROM system.databases WHERE name = 'default'" in script
+        assert "clickhouse.database is set to 'default', which does not exist" in script
 
     def test_both_jobs_render_when_enabled(self):
         names = self._names(self._render(*self.ENABLED))

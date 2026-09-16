@@ -59,31 +59,25 @@ spec:
               # quote or backslash in a secret can terminate or alter the surrounding
               # DDL, and the raw value never appears in the statement at all.
               {{- if .Values.sqlGateway.enabled }}
-              # Both keys are required once the gateway is on, and the Secret reference
-              # above already fails the pod if either is absent. This catches the other
-              # shape, a key that exists and is empty, which would otherwise provision
-              # two accounts with the hash of the empty string.
-              if [ -z "${SQL_GATEWAY_WRITER_PASSWORD:-}" ] || [ -z "${SQL_GATEWAY_RO_PASSWORD:-}" ]; then
-                echo "FAIL: sqlGateway.enabled is set, so {{ .Values.sqlGateway.secretKeys.writerPassword }} and"
-                echo "{{ .Values.sqlGateway.secretKeys.readonlyPassword }} must both be non-empty in secret {{ .Values.clickhouse.auth.existingSecret }}."
+              # The Secret reference above already fails the pod if the key is absent.
+              # This catches the other shape, a key that exists and is empty, which
+              # would otherwise provision the account customer SQL runs as with the
+              # hash of the empty string.
+              if [ -z "${SQL_GATEWAY_RO_PASSWORD:-}" ]; then
+                echo "FAIL: sqlGateway.enabled is set, so {{ .Values.sqlGateway.secretKeys.readonlyPassword }} must be non-empty in secret {{ .Values.clickhouse.auth.existingSecret }}."
                 exit 1
               fi
               {{- end }}
 
-              # Nothing ever authenticates as the writer: the views are SQL SECURITY
-              # DEFINER, which runs the body under the writer's grants and never asks
-              # for its password. So with the gateway off, where no one supplies one,
-              # a random password is generated for the CREATE and then discarded. The
-              # reconciling ALTER is skipped in that case, so an existing writer keeps
-              # the password it already has instead of being rotated every upgrade.
-              WRITER_HASH=$(printf '%s' "${SQL_GATEWAY_WRITER_PASSWORD:-}" | sha256sum | cut -d' ' -f1)
-              WRITER_ALTER="ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';"
-              if [ -z "${SQL_GATEWAY_WRITER_PASSWORD:-}" ]; then
-                # -v stops od collapsing a repeated block to `*`, which would shorten
-                # the password instead of failing.
-                WRITER_HASH=$(od -An -v -N32 -tx1 /dev/urandom | tr -d ' \n' | sha256sum | cut -d' ' -f1)
-                WRITER_ALTER=""
-              fi
+              # The writer's password is generated here and discarded, never stored and
+              # never read from a Secret. Nothing authenticates as this account: the
+              # curated views are SQL SECURITY DEFINER, which runs the body under the
+              # writer's grants and never asks for a password. A stored one would be a
+              # standing credential that can read every project's raw rows, including
+              # the columns the curated views deliberately omit, in exchange for nothing.
+              # -v stops od collapsing a repeated block to `*`, which would shorten the
+              # password instead of failing.
+              WRITER_HASH=$(od -An -v -N32 -tx1 /dev/urandom | tr -d ' \n' | sha256sum | cut -d' ' -f1)
               {{- if .Values.sqlGateway.enabled }}
               RO_HASH=$(printf '%s' "${SQL_GATEWAY_RO_PASSWORD}" | sha256sum | cut -d' ' -f1)
               {{- end }}
@@ -106,6 +100,17 @@ spec:
               echo "--- clickhouse version ---"
               "${CH[@]}" --query "SELECT version()"
 
+              # Grants against a database that does not exist succeed and are recorded,
+              # so a mistyped clickhouse.database leaves this hook green and fails the
+              # migration afterwards with UNKNOWN_DATABASE. Checked here, where the
+              # message can name the value that is wrong.
+              if ! DB_COUNT=$("${CH[@]}" --query "SELECT count() FROM system.databases WHERE name = '{{ .Values.clickhouse.database }}'" 2>&1) || [ "$DB_COUNT" != "1" ]; then
+                echo "FAIL: clickhouse.database is set to '{{ .Values.clickhouse.database }}', which does not exist on this server."
+                echo "The chart does not create it. Create it, or point clickhouse.database at an existing database."
+                printf '%s\n' "$DB_COUNT"
+                exit 1
+              fi
+
               # Creating users requires access management, which the stock admin
               # does not carry unless clickhouse.usersExtraOverrides grants it.
               # Printed before the DDL so a permissions failure below is
@@ -114,34 +119,44 @@ spec:
               ADMIN_GRANTS=$("${CH[@]}" --query "SHOW GRANTS" 2>&1) || ADMIN_GRANTS=""
               printf '%s\n' "$ADMIN_GRANTS"
 
-              # The bundled image grants its admin CREATE USER and SET DEFINER, so no
-              # extra configuration is normally needed. An image or an external server
-              # whose admin is narrower would otherwise fail several statements later
-              # with a bare permission error; checked here so the message names both
-              # the cause and the fix.
+              # Advisory only, never fatal. An admin holding these through a granted
+              # role prints just the role here, which a literal scan cannot see, and
+              # failing on that would abort the release for a server that provisions
+              # perfectly well. The statements below carry the real verdict.
               for NEEDED in "CREATE USER" "SET DEFINER"; do
                 if ! printf '%s' "$ADMIN_GRANTS" | grep -qF "$NEEDED"; then
-                  echo "FAIL: the ClickHouse admin does not hold $NEEDED, which provisioning requires."
-                  echo "Set clickhouse.usersExtraOverrides to enable access_management for this"
-                  echo "account, or point the chart at an admin that already has it."
-                  exit 1
+                  echo "note: $NEEDED is not listed directly for this account; it may still hold it through a role."
                 fi
               done
 
-              # Idempotent and reconciling: CREATE ... IF NOT EXISTS leaves an
-              # existing user on its old password, so each CREATE is followed by
-              # an ALTER. Rotating a secret and re-running this hook is therefore
-              # enough to propagate the new password. The writer's ALTER is the one
-              # exception, skipped when no password was supplied, so that a
-              # generated one never overwrites a real one.
-              # Grants are recorded by name, so the read-only grants on the
-              # curated views are accepted here even though the migration that
-              # creates those views has not run yet.
+              # Skipped entirely when the account is already there, so an operator who
+              # provisions it themselves needs no privilege to create users at all. The
+              # password is left alone in that case: it is not ours to rotate, and this
+              # hook's generated one is worth nothing to anybody.
+              NEED_CREATE=yes
+              if USER_COUNT=$("${CH[@]}" --query "SELECT count() FROM system.users WHERE name = '{{ .Values.sqlGateway.writerUser }}'" 2>&1); then
+                [ "$USER_COUNT" = "1" ] && NEED_CREATE=""
+              fi
+
               echo "--- provisioning identities ---"
+              if [ -n "$NEED_CREATE" ]; then
+                if ! CREATED=$("${CH[@]}" --query "
+                  CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}
+                      IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}'" 2>&1); then
+                  echo "FAIL: could not create {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}, which the ClickHouse migration needs as the definer of its curated views."
+                  echo "Either grant this account CREATE USER (clickhouse.usersExtraOverrides enables access management on the bundled image),"
+                  echo "or create {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} yourself, in which case this hook leaves it alone."
+                  printf '%s\n' "$CREATED"
+                  exit 1
+                fi
+              else
+                echo "{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} already exists; leaving its password untouched"
+              fi
+
+              # Grants are recorded by name, so the read-only grants on the curated
+              # views are accepted here even though the migration that creates those
+              # views has not run yet.
               "${CH[@]}" --multiquery --query "
-                CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}
-                    IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';
-                ${WRITER_ALTER}
                 GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }};
                 GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }};
               "
@@ -185,17 +200,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.clickhouse.auth.existingSecret }}
                   key: {{ .Values.clickhouse.auth.existingSecretKey }}
-            - name: SQL_GATEWAY_WRITER_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.clickhouse.auth.existingSecret }}
-                  key: {{ .Values.sqlGateway.secretKeys.writerPassword | quote }}
-                  {{- if not .Values.sqlGateway.enabled }}
-                  # With the gateway off this key is normally absent, and the hook
-                  # generates a password instead. Without this the pod would not
-                  # start, and every install without the gateway would fail.
-                  optional: true
-                  {{- end }}
             {{- if .Values.sqlGateway.enabled }}
             - name: SQL_GATEWAY_RO_PASSWORD
               valueFrom:
