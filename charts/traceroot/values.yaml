@@ -237,6 +237,11 @@ sqlGateway:
   # the curated views are SQL SECURITY DEFINER and run on its grants. Storing one
   # would mean keeping a credential that reads every project's raw rows, including
   # the columns the curated views omit, and that nothing needs.
+  #
+  # Rotating this password takes effect at the pre-upgrade hook, before the API pods
+  # roll onto the new value, so public SQL requests fail authentication for the
+  # length of that rollout. Rotate during a window where that is acceptable. Nothing
+  # else in the release is affected: only the public endpoint uses this account.
   secretKeys:
     readonlyPassword: "clickhouse-ro-password"
   # Caps applied to the read-only profile, enforced by ClickHouse rather than by
