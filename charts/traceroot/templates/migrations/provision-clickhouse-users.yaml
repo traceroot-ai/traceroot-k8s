@@ -6,6 +6,7 @@ release. So the writer is provisioned unconditionally; everything the gateway
 alone needs -- the read-only user, its settings profile and its grants on the
 views -- stays behind sqlGateway.enabled.
 */}}
+{{- include "traceroot.sqlGateway.checkIdentities" . }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -53,7 +54,7 @@ spec:
               # readable in /proc/<pid>/cmdline for anything that can see the process.
               export CLICKHOUSE_PASSWORD="${CLICKHOUSE_ADMIN_PASSWORD}"
               CH=(clickhouse-client --host "{{ include "traceroot.clickhouse.hostname" . }}" --port 9000
-                  --user "{{ .Values.clickhouse.auth.username }}")
+                  --user "{{ include "traceroot.sqlGateway.shellSafe" (dict "name" "clickhouse.auth.username" "value" .Values.clickhouse.auth.username) }}")
 
               # Passwords are sent as their SHA-256 hash rather than as literals, so no
               # quote or backslash in a secret can terminate or alter the surrounding
@@ -164,16 +165,16 @@ spec:
               "${CH[@]}" --multiquery --query "
                 CREATE SETTINGS PROFILE IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
                     readonly = 1,
-                    max_execution_time = {{ .Values.sqlGateway.limits.maxExecutionTime }} CONST,
-                    max_result_rows = {{ .Values.sqlGateway.limits.maxResultRows }} CONST,
-                    max_result_bytes = {{ .Values.sqlGateway.limits.maxResultBytes }} CONST,
-                    max_memory_usage = {{ .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
+                    max_execution_time = {{ int64 .Values.sqlGateway.limits.maxExecutionTime }} CONST,
+                    max_result_rows = {{ int64 .Values.sqlGateway.limits.maxResultRows }} CONST,
+                    max_result_bytes = {{ int64 .Values.sqlGateway.limits.maxResultBytes }} CONST,
+                    max_memory_usage = {{ int64 .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
                 ALTER SETTINGS PROFILE {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
                     readonly = 1,
-                    max_execution_time = {{ .Values.sqlGateway.limits.maxExecutionTime }} CONST,
-                    max_result_rows = {{ .Values.sqlGateway.limits.maxResultRows }} CONST,
-                    max_result_bytes = {{ .Values.sqlGateway.limits.maxResultBytes }} CONST,
-                    max_memory_usage = {{ .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
+                    max_execution_time = {{ int64 .Values.sqlGateway.limits.maxExecutionTime }} CONST,
+                    max_result_rows = {{ int64 .Values.sqlGateway.limits.maxResultRows }} CONST,
+                    max_result_bytes = {{ int64 .Values.sqlGateway.limits.maxResultBytes }} CONST,
+                    max_memory_usage = {{ int64 .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
                 CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
                     IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
                     SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
@@ -199,7 +200,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.clickhouse.auth.existingSecret }}
-                  key: {{ .Values.clickhouse.auth.existingSecretKey }}
+                  key: {{ .Values.clickhouse.auth.existingSecretKey | quote }}
             {{- if .Values.sqlGateway.enabled }}
             - name: SQL_GATEWAY_RO_PASSWORD
               valueFrom:

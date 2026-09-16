@@ -31,7 +31,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.postgresql.existingSecret }}
-                  key: {{ .Values.postgresql.secretKeys.databaseUrl }}
+                  key: {{ .Values.postgresql.secretKeys.databaseUrl | quote }}
           resources:
             requests:
               cpu: "250m"

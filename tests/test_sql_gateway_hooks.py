@@ -126,12 +126,32 @@ def test_retention_comes_from_the_shared_value(name):
     assert ".Values.migrations.retainFinishedSeconds" in text or "traceroot.migrations.ttl" in text
 
 
-def test_retention_rejects_values_kubernetes_cannot_store():
-    """ttlSecondsAfterFinished is int32; a larger value renders fine and is rejected
-    by the API server mid-upgrade instead."""
-    helper = open(os.path.join(_CHART, "templates", "_helpers.tpl")).read()
-    block = helper[helper.index("traceroot.migrations.ttl"):]
-    assert "2147483647" in block, "no int32 upper bound on the retention value"
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
+@pytest.mark.parametrize(
+    "value,expect",
+    [
+        ("-1", "must not be negative"),
+        ("1.5", "whole number"),
+        ("2147483648", "must fit in int32"),
+        ("notanumber", "whole number of seconds or null"),
+    ],
+)
+def test_retention_rejects_values_kubernetes_cannot_store(value, expect):
+    """ttlSecondsAfterFinished is int32. Rendered rather than asserted on the helper's
+    text: an out-of-range value otherwise renders fine and is refused by the API server
+    in the middle of a pre-upgrade hook, where the error names none of this."""
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        f.write("migrations:\n  retainFinishedSeconds: %s\n" % value)
+        path = f.name
+    try:
+        out = subprocess.run(
+            ["helm", "template", "traceroot", _CHART, "--set", "ingress.host=example.com", "-f", path],
+            capture_output=True, text=True,
+        )
+    finally:
+        os.unlink(path)
+    assert out.returncode != 0, "%s rendered instead of being refused" % value
+    assert expect in out.stderr, "%s: %s" % (value, out.stderr[-400:])
 
 
 def test_retention_default_is_positive_and_tunable():
@@ -147,24 +167,22 @@ def _caps_probe(text: str) -> str:
     return text[start : end + len("\n              fi\n")] if end > 0 else ""
 
 
-def test_readonly_client_sends_no_per_query_settings():
+def test_the_readonly_client_never_sets_a_per_query_setting():
     """A readonly = 1 user cannot set them; the server rejects the query outright.
 
-    One deliberate exception: the probe that proves the caps are enforced sends an
-    override precisely so it can require the server to refuse it. That block is
-    excised here, so the ban still covers every other use, and its shape is
-    asserted separately below.
+    Reading them back with getSetting is how the caps are verified, so the ban is on
+    *setting* one: a `--max_memory_usage 100` on the invocation line, or a SETTINGS
+    clause on a probe that is expected to succeed. The one SETTINGS clause in the hook
+    is the override that must be refused, asserted separately below.
     """
-    # The whole template, not just the CH_RO array: a setting is naturally added on
-    # the invocation line, `"${CH_RO[@]}" --max_memory_usage 100 --query ...`, which an
-    # array-only scan never sees. None of these names belong anywhere in this hook; the
-    # CONST caps live in the provisioning template's settings profile.
     text = _template_text(_VERIFY)
+    for setting in ("max_execution_time", "max_result_rows", "max_result_bytes", "max_memory_usage"):
+        assert "--%s" % setting not in text, "%s must not be passed on the client command line" % setting
     probe = _caps_probe(text)
     assert probe, "the caps probe is missing; without it a detached profile goes unnoticed"
-    rest = text.replace(probe, "")
-    for setting in ("max_execution_time", "max_result_rows", "max_result_bytes", "max_memory_usage"):
-        assert setting not in rest, "%s cannot be set by the read-only user" % setting
+    assert text.count("SETTINGS ") == text.replace(probe, "").count("SETTINGS ") + 1, (
+        "the only SETTINGS clause must be the override the probe requires to be refused"
+    )
 
 
 def test_the_caps_probe_treats_a_successful_override_as_a_failure():
@@ -184,13 +202,18 @@ def test_the_caps_probe_treats_a_successful_override_as_a_failure():
     )
 
 
-def test_the_readonly_mode_itself_is_verified():
-    """Every other check passes with the profile detached; only this one notices."""
+def test_every_configured_cap_is_verified_not_just_readonly():
+    """Every other check passes with the profile detached, and readonly alone passes
+    with a cap widened: readonly = 1 refuses any override whatever the values are."""
     text = _template_text(_VERIFY)
-    assert "getSetting('readonly')" in text
-    assert '[ "$MODE" != "1" ]' in text, "readonly must be asserted to be exactly 1"
-
-
+    assert "CAPS_EXPECTED" in text and '[ "$CAPS" != "$CAPS_EXPECTED" ]' in text
+    for cap in ("readonly", "max_execution_time", "max_result_rows", "max_result_bytes", "max_memory_usage"):
+        assert "getSetting('%s')" % cap in text, "%s is never read back" % cap
+    for limit in ("maxExecutionTime", "maxResultRows", "maxResultBytes", "maxMemoryUsage"):
+        assert "int64 .Values.sqlGateway.limits.%s" % limit in text, (
+            "%s must render as an integer; a large float64 renders in exponent form and "
+            "never matches what the server reports" % limit
+        )
 
 
 def test_passwords_are_not_embedded_as_sql_literals():
@@ -230,8 +253,10 @@ def _run_block(script: str, block: str, stub: str, cmd_var: str) -> str:
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
 class TestRendered:
-    # Enabling the gateway now requires the admin access-management override, so
-    # every "enabled" render supplies it. Its absence is asserted separately.
+    # No access-management override here: the bundled image's admin already holds
+    # CREATE USER and SET DEFINER, verified directly against
+    # bitnamilegacy/clickhouse:25.2.1-debian-12-r0. Supplying one in the fixture would
+    # imply the gateway needs it.
     # A fully enabled gateway. `verify` is opted into explicitly because the chart
     # defaults it off: the hook runs at pre-upgrade, so leaving it on by default would
     # let gateway drift fail a release that changed nothing about the gateway.
@@ -240,15 +265,8 @@ class TestRendered:
         "sqlGateway.enabled=true",
         "--set",
         "sqlGateway.verify=true",
-        "--set",
-        "clickhouse.usersExtraOverrides=x",
     )
-    ENABLED_NO_VERIFY = (
-        "--set",
-        "sqlGateway.enabled=true",
-        "--set",
-        "clickhouse.usersExtraOverrides=x",
-    )
+    ENABLED_NO_VERIFY = ("--set", "sqlGateway.enabled=true")
 
     @staticmethod
     def _render(*extra: str) -> list:
@@ -595,7 +613,20 @@ class TestRendered:
         created without it is uncapped while looking identical everywhere else.
         """
         script = self._provision_script(*self.ENABLED)
-        assert script.count("CONST") == 8, "each of the four caps is CONST on create and on alter"
+        for cap, value in (
+            ("max_execution_time", 30),
+            ("max_result_rows", 100000),
+            ("max_result_bytes", 536870912),
+            ("max_memory_usage", 4294967296),
+        ):
+            # Once in CREATE and once in ALTER, each carrying CONST and the configured
+            # value. A bare count of CONST tokens passes even when one cap has none.
+            assert script.count("%s = %d CONST" % (cap, value)) == 2, (
+                "%s is not capped at %d with CONST in both statements" % (cap, value)
+            )
+            assert "e+" not in script[script.index(cap) : script.index(cap) + 60], (
+                "%s rendered in exponent form" % cap
+            )
         assert "readonly = 1" in script
         assert script.count("SETTINGS PROFILE 'sql_readonly_profile'") == 2, (
             "the read-only user must carry the profile on both CREATE and ALTER"
@@ -625,6 +656,53 @@ class TestRendered:
             "the read probe must run as the read-only user or it proves nothing"
         )
         assert '--user "sql_gateway_ro"' in script, "CH_RO must authenticate as the read-only account"
+
+    @pytest.mark.parametrize(
+        "override,expect",
+        [
+            ("sqlGateway.readonlyUser=sql_gateway_writer", "must be different accounts"),
+            ("sqlGateway.writerUser=default", "must not be the ClickHouse admin"),
+            ("sqlGateway.readonlyUser=default", "must not be the ClickHouse admin"),
+        ],
+    )
+    def test_collapsing_two_identities_into_one_is_refused(self, override, expect):
+        """One account holding the writer's SELECT on the physical tables and the
+        password handed to customer SQL is the isolation removed. The hook would
+        carry it out and report success, so it is refused at render time."""
+        out = subprocess.run(
+            ["helm", "template", "traceroot", _CHART, "--set", "ingress.host=example.com",
+             "--set", "sqlGateway.enabled=true", "--set", override],
+            capture_output=True, text=True,
+        )
+        assert out.returncode != 0, "%s rendered instead of being refused" % override
+        assert expect in out.stderr, out.stderr[-300:]
+
+    def test_an_admin_username_that_breaks_out_of_the_script_is_refused(self):
+        """It is spliced into a shell command line and into SQL string literals."""
+        for bad in ('ad"min', "ad'min", "ad min", "ad;min"):
+            out = subprocess.run(
+                ["helm", "template", "traceroot", _CHART, "--set", "ingress.host=example.com",
+                 "--set", "clickhouse.auth.username=%s" % bad],
+                capture_output=True, text=True,
+            )
+            assert out.returncode != 0, "%r rendered" % bad
+            assert "clickhouse.auth.username must match" in out.stderr
+
+    def test_a_numeric_secret_key_stays_a_string(self):
+        """secretKeyRef.key is a string field; an unquoted numeric value renders as a
+        number and the API server refuses the Job in the middle of the upgrade.
+
+        Scoped to the hook Jobs this stack owns. The Deployments have the same shape
+        throughout the chart and are left for a change that can cover them all.
+        """
+        for d in self._render("--set", "clickhouse.auth.existingSecretKey=12345",
+                              "--set", "sqlGateway.enabled=true"):
+            if d.get("kind") != "Job":
+                continue
+            for e in d["spec"]["template"]["spec"]["containers"][0].get("env", []):
+                key = e.get("valueFrom", {}).get("secretKeyRef", {}).get("key")
+                if key is not None:
+                    assert isinstance(key, str), "%s rendered %r" % (e["name"], key)
 
     def test_orphan_scan_covers_the_physical_tables_not_just_the_views(self):
         """A stale writer holds SELECT on the raw tables, which is the worse leftover
@@ -674,7 +752,7 @@ case "$q" in
     printf 'GRANT SELECT ON default.spans_public_v1 TO sql_gateway_ro\n'
     printf 'GRANT SELECT ON default.traces_public_v1 TO sql_gateway_ro\n'
     ${EXTRA_GRANT:+printf '%s\n' "$EXTRA_GRANT"} ;;
-  *"getSetting('readonly')"*) echo "${READONLY:-1}" ;;
+  *"getSetting('readonly')"*) printf '%s\n' "${CAPS:-1\t30\t100000\t536870912\t4294967296}" ;;
   *"SETTINGS max_result_rows"*) echo "Code: 164. DB::Exception: READONLY" >&2; exit 1 ;;
   *) : ;;
 esac
@@ -708,7 +786,8 @@ exit 0
         [
             ("everything healthy", {}, 0),
             ("view owned by someone else", {"DEFINER": "default"}, 1),
-            ("settings profile detached", {"READONLY": "0"}, 1),
+            ("settings profile detached", {"CAPS": "0\t0\t0\t0\t0"}, 1),
+            ("one cap quietly widened", {"CAPS": "1\t30\t100000\t536870912\t42949672960"}, 1),
             ("read-only account widened", {"EXTRA_GRANT": "GRANT SELECT ON default.spans TO sql_gateway_ro"}, 1),
         ],
     )

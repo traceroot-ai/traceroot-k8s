@@ -1,4 +1,5 @@
 {{- if and .Values.sqlGateway.enabled .Values.sqlGateway.verify }}
+{{- include "traceroot.sqlGateway.checkIdentities" . }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -46,7 +47,7 @@ spec:
               # read-only user is set per call, since both clients run in this script.
               export CLICKHOUSE_PASSWORD="${CLICKHOUSE_ADMIN_PASSWORD}"
               CH_ADMIN=(clickhouse-client --host "$HOST" --port 9000
-                        --user "{{ .Values.clickhouse.auth.username }}")
+                        --user "{{ include "traceroot.sqlGateway.shellSafe" (dict "name" "clickhouse.auth.username" "value" .Values.clickhouse.auth.username) }}")
               # No per-query settings here on purpose. This user runs under a
               # readonly = 1 profile whose caps are CONST, so the server rejects any
               # attempt to set one -- including from the command line. Passing a bound
@@ -151,14 +152,34 @@ spec:
               # system.users, because what the session can actually do is the property
               # that matters.
               echo "--- read-only caps are attached and enforced ---"
-              if ! MODE=$("${CH_RO[@]}" --query "SELECT getSetting('readonly')" 2>&1); then
+              # Every configured cap, not just that a profile is attached. readonly = 1
+              # alone refuses any override, so the probe below would pass while a cap
+              # sat at a value nobody chose: a profile edited to 40 GiB is still CONST
+              # and still readonly. The values are what bound a query, so the values are
+              # what is compared. toUInt64 because max_execution_time is a Float64
+              # setting and prints as 30 here but 30. in DDL.
+              CAPS_EXPECTED=$(printf '1\t%s\t%s\t%s\t%s' \
+                "{{ int64 .Values.sqlGateway.limits.maxExecutionTime }}" \
+                "{{ int64 .Values.sqlGateway.limits.maxResultRows }}" \
+                "{{ int64 .Values.sqlGateway.limits.maxResultBytes }}" \
+                "{{ int64 .Values.sqlGateway.limits.maxMemoryUsage }}")
+              if ! CAPS=$("${CH_RO[@]}" --query "
+                SELECT toUInt64(getSetting('readonly')),
+                       toUInt64(getSetting('max_execution_time')),
+                       toUInt64(getSetting('max_result_rows')),
+                       toUInt64(getSetting('max_result_bytes')),
+                       toUInt64(getSetting('max_memory_usage'))
+                FORMAT TSV" 2>&1); then
                 echo "FAIL: could not read the effective settings of {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}:"
-                printf '%s\n' "$MODE"; FAILED=1
-              elif [ "$MODE" != "1" ]; then
-                echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} runs with readonly = ${MODE}, not 1; its settings profile is not attached"
+                printf '%s\n' "$CAPS"; FAILED=1
+              elif [ "$CAPS" != "$CAPS_EXPECTED" ]; then
+                echo "FAIL: the caps in force are not the ones this release configured."
+                echo "  readonly, max_execution_time, max_result_rows, max_result_bytes, max_memory_usage"
+                echo "  expected: $CAPS_EXPECTED"
+                echo "  in force: $CAPS"
                 FAILED=1
               else
-                echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} runs under readonly = 1"
+                echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} runs under readonly = 1 with the configured caps"
               fi
 
               # And the caps are CONST, so no query can raise one. Proven by trying:
@@ -203,7 +224,7 @@ spec:
                   AND (table IS NULL OR table IN ('spans', 'traces', 'spans_public_v1', 'traces_public_v1'))
                   -- The ClickHouse admin legitimately holds everything; it is the
                   -- account the application itself reads and writes with.
-                  AND ifNull(user_name, '') != '{{ .Values.clickhouse.auth.username }}'
+                  AND ifNull(user_name, '') != '{{ include "traceroot.sqlGateway.shellSafe" (dict "name" "clickhouse.auth.username" "value" .Values.clickhouse.auth.username) }}'
                   -- ifNull throughout: comparing a NULL column returns NULL, and NOT NULL
                   -- is NULL, so a bare inequality here would filter out the role rows
                   -- this exists to surface.
@@ -232,7 +253,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.clickhouse.auth.existingSecret }}
-                  key: {{ .Values.clickhouse.auth.existingSecretKey }}
+                  key: {{ .Values.clickhouse.auth.existingSecretKey | quote }}
             - name: SQL_GATEWAY_RO_PASSWORD
               valueFrom:
                 secretKeyRef:

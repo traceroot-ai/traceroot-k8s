@@ -67,7 +67,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.clickhouse.auth.existingSecret }}
-                  key: {{ .Values.clickhouse.auth.existingSecretKey }}
+                  key: {{ .Values.clickhouse.auth.existingSecretKey | quote }}
           resources:
             requests:
               cpu: "250m"

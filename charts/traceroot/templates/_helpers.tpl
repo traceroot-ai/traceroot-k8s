@@ -62,3 +62,40 @@ extra client flags that silently change which account the verification runs as.
 {{- end -}}
 {{- $value -}}
 {{- end }}
+
+{{/*
+The two gateway accounts and the ClickHouse admin must be three different accounts.
+Collapsing any pair removes the isolation the gateway exists to provide: one identity
+would hold the writer's SELECT on the physical tables together with the password the
+application hands to customer SQL. Checked at render time, because the hook would
+otherwise carry it out and report success.
+*/}}
+{{- define "traceroot.sqlGateway.checkIdentities" -}}
+{{- $w := .Values.sqlGateway.writerUser -}}
+{{- $r := .Values.sqlGateway.readonlyUser -}}
+{{- $a := .Values.clickhouse.auth.username -}}
+{{- if eq $w $r -}}
+{{- fail (printf "sqlGateway.writerUser and sqlGateway.readonlyUser must be different accounts, both are %q. One account cannot both own the curated views and be the account customer SQL runs as." $w) -}}
+{{- end -}}
+{{- if eq $w $a -}}
+{{- fail (printf "sqlGateway.writerUser must not be the ClickHouse admin (clickhouse.auth.username), both are %q. The views would run as an account with full access." $w) -}}
+{{- end -}}
+{{- if eq $r $a -}}
+{{- fail (printf "sqlGateway.readonlyUser must not be the ClickHouse admin (clickhouse.auth.username), both are %q. Customer SQL would run with full access." $r) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+A value that is spliced into a shell command line and into SQL string literals, so it
+is held to a conservative character set rather than quoted and hoped for. Wider than
+the identifier check above, since this one applies to an existing account name the
+chart did not choose and must not break: dots, hyphens and @ are all legal here.
+*/}}
+{{- define "traceroot.sqlGateway.shellSafe" -}}
+{{- $name := .name -}}
+{{- $value := .value -}}
+{{- if not (regexMatch "^[A-Za-z0-9_.@-]+$" $value) -}}
+{{- fail (printf "%s must match ^[A-Za-z0-9_.@-]+$ (it is used in a shell command and in SQL string literals), got %q" $name $value) -}}
+{{- end -}}
+{{- $value -}}
+{{- end }}
