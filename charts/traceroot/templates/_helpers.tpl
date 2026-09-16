@@ -16,7 +16,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if .Values.clickhouse.deploy -}}
 {{- printf "%s-clickhouse" (include "traceroot.fullname" .) -}}
 {{- else -}}
-{{- .Values.clickhouse.host -}}
+{{- include "traceroot.sqlGateway.shellSafe" (dict "name" "clickhouse.host" "value" .Values.clickhouse.host) -}}
 {{- end -}}
 {{- end }}
 
