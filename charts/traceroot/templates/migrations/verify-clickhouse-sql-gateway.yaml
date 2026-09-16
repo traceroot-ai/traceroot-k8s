@@ -17,10 +17,11 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 2
-  # Retained after success; bounded by the same knob as the migration job.
-  {{- if not (kindIs "invalid" .Values.migrations.retainFinishedSeconds) }}
-  ttlSecondsAfterFinished: {{ .Values.migrations.retainFinishedSeconds }}
-  {{- end }}
+  # Retained after success; bounded by the same knob as the migration job. Via the
+  # shared helper, not inline: the value arrives as float64 from a values file and
+  # int64 from --set, and Go renders a large float64 in exponent form, which is not
+  # an integer and which the API server rejects mid-upgrade.
+  {{- include "traceroot.migrations.ttl" . | nindent 2 }}
   template:
     metadata:
       labels:
@@ -54,7 +55,7 @@ spec:
               # enforced by the profile; LIMIT 0 keeps the probe itself cheap.
               CH_RO=(env CLICKHOUSE_PASSWORD="${SQL_GATEWAY_RO_PASSWORD}"
                      clickhouse-client --host "$HOST" --port 9000
-                     --user "{{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}")
+                     --user "{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}")
               FAILED=0
 
               echo "--- clickhouse version ---"
@@ -76,10 +77,10 @@ spec:
                 # different, longer account -- sql_gateway_writer_admin contains
                 # sql_gateway_writer -- which is exactly the substitution this exists
                 # to catch. -F because the account name is operator-supplied.
-                if printf '%s' "$DDL" | grep -qF "DEFINER = {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} SQL SECURITY DEFINER"; then
-                  echo "OK: $VIEW is owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}"
+                if printf '%s' "$DDL" | grep -qF "DEFINER = {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} SQL SECURITY DEFINER"; then
+                  echo "OK: $VIEW is owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}"
                 else
-                  echo "FAIL: $VIEW is not owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}"; FAILED=1
+                  echo "FAIL: $VIEW is not owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}"; FAILED=1
                 fi
               done
 
@@ -94,9 +95,9 @@ spec:
                 # and a missing view all land here, and only one of them is the grant
                 # problem the bare message used to imply.
                 if ERR=$("${CH_RO[@]}" --query "SELECT count() FROM {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$VIEW(project_id = 'helm-verification-probe', start_time = toDateTime64('1970-01-01 00:00:00', 3), end_time = toDateTime64('2099-01-01 00:00:00', 3))" 2>&1); then
-                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read $VIEW"
+                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read $VIEW"
                 else
-                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} cannot read $VIEW:"
+                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} cannot read $VIEW:"
                   printf '%s\n' "$ERR"; FAILED=1
                 fi
               done
@@ -109,14 +110,47 @@ spec:
               for TABLE in spans traces; do
                 echo "--- read-only user is denied {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE ---"
                 if ERR=$("${CH_RO[@]}" --query "SELECT * FROM {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE LIMIT 0" 2>&1); then
-                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE"; FAILED=1
+                  echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} can read {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE"; FAILED=1
                 elif printf '%s' "$ERR" | grep -qE 'ACCESS_DENIED|Code: 497'; then
-                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} denied {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE (ACCESS_DENIED)"
+                  echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} denied {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE (ACCESS_DENIED)"
                 else
                   echo "FAIL: probe of {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.$TABLE did not return ACCESS_DENIED; denial unproven:"
                   printf '%s\n' "$ERR"; FAILED=1
                 fi
               done
+
+              # The settings profile is the other half of the design, and nothing above
+              # would notice its absence: an account whose profile was detached still
+              # reads the views, is still refused the physical tables, and passes every
+              # check so far while holding no limit at all. What it loses is the bound
+              # on how much one query may consume, so a single caller can exhaust the
+              # server for everyone. Probed behaviourally rather than by reading
+              # system.users, because what the session can actually do is the property
+              # that matters.
+              echo "--- read-only caps are attached and enforced ---"
+              if ! MODE=$("${CH_RO[@]}" --query "SELECT getSetting('readonly')" 2>&1); then
+                echo "FAIL: could not read the effective settings of {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}:"
+                printf '%s\n' "$MODE"; FAILED=1
+              elif [ "$MODE" != "1" ]; then
+                echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} runs with readonly = ${MODE}, not 1; its settings profile is not attached"
+                FAILED=1
+              else
+                echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} runs under readonly = 1"
+              fi
+
+              # And the caps are CONST, so no query can raise one. Proven by trying:
+              # a server that accepts the override has caps any caller can remove.
+              # Code 164 is READONLY, which is what a readonly = 1 session returns for
+              # any attempt to change a setting.
+              if RAISED=$("${CH_RO[@]}" --query "SELECT 1 SETTINGS max_result_rows = 99999999" 2>&1); then
+                echo "FAIL: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} raised max_result_rows for one query; the caps are not enforced"
+                FAILED=1
+              elif printf '%s' "$RAISED" | grep -qE 'READONLY|Code: 164|SETTING_CONSTRAINT_VIOLATION|Code: 452'; then
+                echo "OK: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} cannot raise max_result_rows"
+              else
+                echo "FAIL: the override of max_result_rows failed for another reason, so the cap is unproven:"
+                printf '%s\n' "$RAISED"; FAILED=1
+              fi
 
               # Renaming either account leaves the previous one live, with its password
               # and its grants, and uninstalling the release leaves both behind entirely.
@@ -136,8 +170,8 @@ spec:
                   AND access_type = 'SELECT'
                   AND user_name IS NOT NULL
                   AND (
-                        (table IN ('spans_public_v1', 'traces_public_v1') AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}')
-                     OR (table IN ('spans', 'traces')                     AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}')
+                        (table IN ('spans_public_v1', 'traces_public_v1') AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}')
+                     OR (table IN ('spans', 'traces')                     AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}')
                   )
               " 2>&1); then
                 # Still not a failure, for the reason above, but not an OK either: a scan
@@ -145,7 +179,7 @@ spec:
                 echo "WARNING: could not read system.grants, so orphaned gateway accounts were not checked:"
                 printf '%s\n' "$ORPHANS"
               elif [ -n "$ORPHANS" ]; then
-                echo "WARNING: accounts other than {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} and {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} hold gateway grants."
+                echo "WARNING: accounts other than {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} and {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} hold gateway grants."
                 echo "They are not created or removed by this release:"
                 printf '%s\n' "$ORPHANS"
               else

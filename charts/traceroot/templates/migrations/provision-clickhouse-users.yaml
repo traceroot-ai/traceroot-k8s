@@ -25,10 +25,11 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 6
-  # Retained after success; bounded by the same knob as the migration job.
-  {{- if not (kindIs "invalid" .Values.migrations.retainFinishedSeconds) }}
-  ttlSecondsAfterFinished: {{ .Values.migrations.retainFinishedSeconds }}
-  {{- end }}
+  # Retained after success; bounded by the same knob as the migration job. Via the
+  # shared helper, not inline: the value arrives as float64 from a values file and
+  # int64 from --set, and Go renders a large float64 in exponent form, which is not
+  # an integer and which the API server rejects mid-upgrade.
+  {{- include "traceroot.migrations.ttl" . | nindent 2 }}
   template:
     metadata:
       labels:
@@ -76,7 +77,7 @@ spec:
               # reconciling ALTER is skipped in that case, so an existing writer keeps
               # the password it already has instead of being rotated every upgrade.
               WRITER_HASH=$(printf '%s' "${SQL_GATEWAY_WRITER_PASSWORD:-}" | sha256sum | cut -d' ' -f1)
-              WRITER_ALTER="ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';"
+              WRITER_ALTER="ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';"
               if [ -z "${SQL_GATEWAY_WRITER_PASSWORD:-}" ]; then
                 # -v stops od collapsing a repeated block to `*`, which would shorten
                 # the password instead of failing.
@@ -138,44 +139,44 @@ spec:
               # creates those views has not run yet.
               echo "--- provisioning identities ---"
               "${CH[@]}" --multiquery --query "
-                CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}
+                CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}
                     IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}';
                 ${WRITER_ALTER}
-                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }};
-                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }};
+                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }};
+                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }};
               "
               {{- if .Values.sqlGateway.enabled }}
               "${CH[@]}" --multiquery --query "
-                CREATE SETTINGS PROFILE IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
+                CREATE SETTINGS PROFILE IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
                     readonly = 1,
                     max_execution_time = {{ .Values.sqlGateway.limits.maxExecutionTime }} CONST,
                     max_result_rows = {{ .Values.sqlGateway.limits.maxResultRows }} CONST,
                     max_result_bytes = {{ .Values.sqlGateway.limits.maxResultBytes }} CONST,
                     max_memory_usage = {{ .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
-                ALTER SETTINGS PROFILE {{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
+                ALTER SETTINGS PROFILE {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
                     readonly = 1,
                     max_execution_time = {{ .Values.sqlGateway.limits.maxExecutionTime }} CONST,
                     max_result_rows = {{ .Values.sqlGateway.limits.maxResultRows }} CONST,
                     max_result_bytes = {{ .Values.sqlGateway.limits.maxResultBytes }} CONST,
                     max_memory_usage = {{ .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
-                CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
+                CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
                     IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
-                    SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
-                ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
+                    SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
+                ALTER USER {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
                     IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
-                    SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
-                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans_public_v1  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
-                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
+                    SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
+                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans_public_v1  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
+                GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
               "
               {{- end }}
 
               # ClickHouse redacts passwords in query_log, so echoing the
               # resulting grants leaks nothing and records what was applied.
-              echo "--- grants: {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }} ---"
-              "${CH[@]}" --query "SHOW GRANTS FOR {{ include "traceroot.sqlGateway.identifier" (dict "name" "writerUser" "value" .Values.sqlGateway.writerUser) }}"
+              echo "--- grants: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} ---"
+              "${CH[@]}" --query "SHOW GRANTS FOR {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}"
               {{- if .Values.sqlGateway.enabled }}
-              echo "--- grants: {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} ---"
-              "${CH[@]}" --query "SHOW GRANTS FOR {{ include "traceroot.sqlGateway.identifier" (dict "name" "readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}"
+              echo "--- grants: {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }} ---"
+              "${CH[@]}" --query "SHOW GRANTS FOR {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}"
               {{- end }}
               echo "provisioning complete"
           env:

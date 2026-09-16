@@ -58,7 +58,7 @@ extra client flags that silently change which account the verification runs as.
 {{- $name := .name -}}
 {{- $value := .value -}}
 {{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $value) -}}
-{{- fail (printf "sqlGateway.%s must match ^[A-Za-z_][A-Za-z0-9_]*$ (it is used unquoted in ClickHouse DDL and in a shell command), got %q" $name $value) -}}
+{{- fail (printf "%s must match ^[A-Za-z_][A-Za-z0-9_]*$ (it is used unquoted in ClickHouse DDL and in a shell command), got %q" $name $value) -}}
 {{- end -}}
 {{- $value -}}
 {{- end }}

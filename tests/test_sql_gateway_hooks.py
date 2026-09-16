@@ -138,15 +138,57 @@ def test_retention_default_is_positive_and_tunable():
     assert _values()["migrations"]["retainFinishedSeconds"] > 0
 
 
+def _caps_probe(text: str) -> str:
+    """The `if RAISED=...` block that proves a per-query override is refused."""
+    start = text.find("if RAISED=$(")
+    if start < 0:
+        return ""
+    end = text.find("\n              fi\n", start)
+    return text[start : end + len("\n              fi\n")] if end > 0 else ""
+
+
 def test_readonly_client_sends_no_per_query_settings():
-    """A readonly = 1 user cannot set them; the server rejects the query outright."""
+    """A readonly = 1 user cannot set them; the server rejects the query outright.
+
+    One deliberate exception: the probe that proves the caps are enforced sends an
+    override precisely so it can require the server to refuse it. That block is
+    excised here, so the ban still covers every other use, and its shape is
+    asserted separately below.
+    """
     # The whole template, not just the CH_RO array: a setting is naturally added on
     # the invocation line, `"${CH_RO[@]}" --max_memory_usage 100 --query ...`, which an
     # array-only scan never sees. None of these names belong anywhere in this hook; the
     # CONST caps live in the provisioning template's settings profile.
     text = _template_text(_VERIFY)
+    probe = _caps_probe(text)
+    assert probe, "the caps probe is missing; without it a detached profile goes unnoticed"
+    rest = text.replace(probe, "")
     for setting in ("max_execution_time", "max_result_rows", "max_result_bytes", "max_memory_usage"):
-        assert setting not in text, "%s cannot be set by the read-only user" % setting
+        assert setting not in rest, "%s cannot be set by the read-only user" % setting
+
+
+def test_the_caps_probe_treats_a_successful_override_as_a_failure():
+    """The probe is inverted: if the override is ACCEPTED the caps are gone.
+
+    Written the wrong way round it would report OK exactly when the profile had
+    been detached, which is the one case it exists to catch.
+    """
+    probe = _caps_probe(_template_text(_VERIFY))
+    accepted = probe[: probe.find("elif")]
+    assert "FAILED=1" in accepted, "an accepted override must fail the release"
+    assert "Code: 164" in probe or "READONLY" in probe, (
+        "the refusal must be matched on the server's code, not on any failure"
+    )
+    assert probe.count("FAILED=1") >= 2, (
+        "a refusal for an unexpected reason leaves the cap unproven and must also fail"
+    )
+
+
+def test_the_readonly_mode_itself_is_verified():
+    """Every other check passes with the profile detached; only this one notices."""
+    text = _template_text(_VERIFY)
+    assert "getSetting('readonly')" in text
+    assert '[ "$MODE" != "1" ]' in text, "readonly must be asserted to be exactly 1"
 
 
 
@@ -497,6 +539,33 @@ class TestRendered:
         assert len(found) == 4, "expected four hook Jobs, got %s" % sorted(found)
         for name, ttl in found.items():
             assert isinstance(ttl, int) and ttl > 0, "%s has no bounded TTL: %r" % (name, ttl)
+
+    def test_a_large_retention_still_renders_an_integer_for_every_job(self):
+        """A values FILE delivers the number as float64, and Go renders a large
+        float64 in exponent form. `2.592e+06` is not an integer and `1e+06` is not
+        even a number to a YAML parser, so the API server rejects the Job in the
+        middle of a pre-upgrade hook. The default (604800) happens to render
+        cleanly, which is why only a larger value exercises this.
+
+        `--set` cannot reproduce it: it delivers int64.
+        """
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            f.write("migrations:\n  retainFinishedSeconds: 2592000\n")
+            path = f.name
+        try:
+            found = {
+                d["metadata"]["name"]: d["spec"].get("ttlSecondsAfterFinished")
+                for d in self._render(*self.ENABLED, "-f", path)
+                if d.get("kind") == "Job"
+            }
+        finally:
+            os.unlink(path)
+        assert len(found) == 4, "expected four hook Jobs, got %s" % sorted(found)
+        for name, ttl in found.items():
+            assert isinstance(ttl, int), (
+                "%s rendered %r, which Kubernetes cannot store in an int32 field" % (name, ttl)
+            )
+            assert ttl == 2592000, "%s lost the configured value: %r" % (name, ttl)
 
     def test_orphan_scan_covers_the_physical_tables_not_just_the_views(self):
         """A stale writer holds SELECT on the raw tables, which is the worse leftover
