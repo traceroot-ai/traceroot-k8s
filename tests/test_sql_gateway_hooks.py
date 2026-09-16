@@ -210,10 +210,11 @@ def test_every_configured_cap_is_verified_not_just_readonly():
     for cap in ("readonly", "max_execution_time", "max_result_rows", "max_result_bytes", "max_memory_usage"):
         assert "getSetting('%s')" % cap in text, "%s is never read back" % cap
     for limit in ("maxExecutionTime", "maxResultRows", "maxResultBytes", "maxMemoryUsage"):
-        assert "int64 .Values.sqlGateway.limits.%s" % limit in text, (
-            "%s must render as an integer; a large float64 renders in exponent form and "
-            "never matches what the server reports" % limit
-        )
+        assert '"name" "%s"' % limit in text, "%s is not compared against the server" % limit
+    # Through the helper, which renders an integer. A large float64 renders in exponent
+    # form and would never match what the server reports, so the check would fail on a
+    # correctly configured cluster.
+    assert text.count('include "traceroot.sqlGateway.limit"') == 4
 
 
 def test_passwords_are_not_embedded_as_sql_literals():
@@ -688,6 +689,33 @@ class TestRendered:
             assert out.returncode != 0, "%r rendered" % bad
             assert "clickhouse.auth.username must match" in out.stderr
 
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_a_cap_of_zero_is_refused(self, value):
+        """ClickHouse reads 0 as no limit, so a zero cap removes the bound rather than
+        tightening it, and the hook would provision it and report success."""
+        out = subprocess.run(
+            ["helm", "template", "traceroot", _CHART, "--set", "ingress.host=example.com",
+             "--set", "sqlGateway.enabled=true", "--set", "sqlGateway.limits.maxResultRows=%s" % value],
+            capture_output=True, text=True,
+        )
+        assert out.returncode != 0, "a cap of %s rendered" % value
+        assert "must be greater than zero" in out.stderr
+
+    @pytest.mark.parametrize("var", ["${WRITER_HASH}", "${RO_HASH}"])
+    def test_no_password_hash_reaches_the_command_line(self, var):
+        """/proc/<pid>/cmdline is readable by anything that can see the process.
+
+        The hashes are not the passwords, but they need not be there at all:
+        clickhouse-client reads statements from stdin just as well. Asserted by
+        finding, for each statement carrying a hash, whether the nearest preceding
+        invocation is a pipe or a --query argument.
+        """
+        script = self._provision_script(*self.ENABLED)
+        idx = script.index(var)
+        piped = script.rfind("printf", 0, idx)
+        argv = script.rfind("--query", 0, idx)
+        assert piped > argv, "%s reaches the client through --query, so it lands in argv" % var
+
     def test_a_numeric_secret_key_stays_a_string(self):
         """secretKeyRef.key is a string field; an unquoted numeric value renders as a
         number and the API server refuses the Job in the middle of the upgrade.
@@ -752,7 +780,7 @@ case "$q" in
     printf 'GRANT SELECT ON default.spans_public_v1 TO sql_gateway_ro\n'
     printf 'GRANT SELECT ON default.traces_public_v1 TO sql_gateway_ro\n'
     ${EXTRA_GRANT:+printf '%s\n' "$EXTRA_GRANT"} ;;
-  *"getSetting('readonly')"*) printf '%s\n' "${CAPS:-1\t30\t100000\t536870912\t4294967296}" ;;
+  *"getSetting('readonly')"*) printf '%s\\n' "${CAPS:-1\t30\t100000\t536870912\t4294967296}" ;;
   *"SETTINGS max_result_rows"*) echo "Code: 164. DB::Exception: READONLY" >&2; exit 1 ;;
   *) : ;;
 esac

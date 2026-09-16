@@ -99,3 +99,21 @@ chart did not choose and must not break: dots, hyphens and @ are all legal here.
 {{- end -}}
 {{- $value -}}
 {{- end }}
+
+{{/*
+A settings-profile cap. ClickHouse reads 0 as "no limit", so a cap set to zero is not
+a small budget but the absence of one, and the hook would provision it and report
+success. Negatives are rejected for the same reason: the profile would hold a value
+that bounds nothing.
+*/}}
+{{- define "traceroot.sqlGateway.limit" -}}
+{{- $name := .name -}}
+{{- $value := .value -}}
+{{- if not (or (kindIs "float64" $value) (kindIs "int64" $value) (kindIs "int" $value)) -}}
+{{- fail (printf "sqlGateway.limits.%s must be a positive whole number, got %v (%s)" $name $value (kindOf $value)) -}}
+{{- end -}}
+{{- if le (int64 $value) (int64 0) -}}
+{{- fail (printf "sqlGateway.limits.%s must be greater than zero, got %v. ClickHouse reads 0 as no limit, so this would remove the cap rather than tighten it." $name $value) -}}
+{{- end -}}
+{{- int64 $value -}}
+{{- end }}

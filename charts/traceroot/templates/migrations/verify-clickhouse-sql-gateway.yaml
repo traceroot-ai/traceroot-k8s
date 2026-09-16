@@ -159,10 +159,10 @@ spec:
               # what is compared. toUInt64 because max_execution_time is a Float64
               # setting and prints as 30 here but 30. in DDL.
               CAPS_EXPECTED=$(printf '1\t%s\t%s\t%s\t%s' \
-                "{{ int64 .Values.sqlGateway.limits.maxExecutionTime }}" \
-                "{{ int64 .Values.sqlGateway.limits.maxResultRows }}" \
-                "{{ int64 .Values.sqlGateway.limits.maxResultBytes }}" \
-                "{{ int64 .Values.sqlGateway.limits.maxMemoryUsage }}")
+                "{{ include "traceroot.sqlGateway.limit" (dict "name" "maxExecutionTime" "value" .Values.sqlGateway.limits.maxExecutionTime) }}" \
+                "{{ include "traceroot.sqlGateway.limit" (dict "name" "maxResultRows" "value" .Values.sqlGateway.limits.maxResultRows) }}" \
+                "{{ include "traceroot.sqlGateway.limit" (dict "name" "maxResultBytes" "value" .Values.sqlGateway.limits.maxResultBytes) }}" \
+                "{{ include "traceroot.sqlGateway.limit" (dict "name" "maxMemoryUsage" "value" .Values.sqlGateway.limits.maxMemoryUsage) }}")
               if ! CAPS=$("${CH_RO[@]}" --query "
                 SELECT toUInt64(getSetting('readonly')),
                        toUInt64(getSetting('max_execution_time')),

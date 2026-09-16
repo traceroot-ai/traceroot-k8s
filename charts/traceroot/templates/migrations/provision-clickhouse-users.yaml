@@ -58,7 +58,10 @@ spec:
 
               # Passwords are sent as their SHA-256 hash rather than as literals, so no
               # quote or backslash in a secret can terminate or alter the surrounding
-              # DDL, and the raw value never appears in the statement at all.
+              # DDL, and the raw value never appears in the statement at all. The
+              # statements themselves go over stdin rather than --query: an argument is
+              # readable in /proc/<pid>/cmdline by anything that can see the process,
+              # and a hash there is still more than this needs to expose.
               {{- if .Values.sqlGateway.enabled }}
               # The Secret reference above already fails the pod if the key is absent.
               # This catches the other shape, a key that exists and is empty, which
@@ -141,9 +144,9 @@ spec:
 
               echo "--- provisioning identities ---"
               if [ -n "$NEED_CREATE" ]; then
-                if ! CREATED=$("${CH[@]}" --query "
+                if ! CREATED=$(printf '%s\n' "
                   CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}
-                      IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}'" 2>&1); then
+                      IDENTIFIED WITH sha256_hash BY '${WRITER_HASH}'" | "${CH[@]}" --multiquery 2>&1); then
                   echo "FAIL: could not create {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}, which the ClickHouse migration needs as the definer of its curated views."
                   echo "Either grant this account CREATE USER (clickhouse.usersExtraOverrides enables access management on the bundled image),"
                   echo "or create {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} yourself, in which case this hook leaves it alone."
@@ -162,19 +165,19 @@ spec:
                 GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }};
               "
               {{- if .Values.sqlGateway.enabled }}
-              "${CH[@]}" --multiquery --query "
+              printf '%s\n' "
                 CREATE SETTINGS PROFILE IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
                     readonly = 1,
-                    max_execution_time = {{ int64 .Values.sqlGateway.limits.maxExecutionTime }} CONST,
-                    max_result_rows = {{ int64 .Values.sqlGateway.limits.maxResultRows }} CONST,
-                    max_result_bytes = {{ int64 .Values.sqlGateway.limits.maxResultBytes }} CONST,
-                    max_memory_usage = {{ int64 .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
+                    max_execution_time = {{ include "traceroot.sqlGateway.limit" (dict "name" "maxExecutionTime" "value" .Values.sqlGateway.limits.maxExecutionTime) }} CONST,
+                    max_result_rows = {{ include "traceroot.sqlGateway.limit" (dict "name" "maxResultRows" "value" .Values.sqlGateway.limits.maxResultRows) }} CONST,
+                    max_result_bytes = {{ include "traceroot.sqlGateway.limit" (dict "name" "maxResultBytes" "value" .Values.sqlGateway.limits.maxResultBytes) }} CONST,
+                    max_memory_usage = {{ include "traceroot.sqlGateway.limit" (dict "name" "maxMemoryUsage" "value" .Values.sqlGateway.limits.maxMemoryUsage) }} CONST;
                 ALTER SETTINGS PROFILE {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }} SETTINGS
                     readonly = 1,
-                    max_execution_time = {{ int64 .Values.sqlGateway.limits.maxExecutionTime }} CONST,
-                    max_result_rows = {{ int64 .Values.sqlGateway.limits.maxResultRows }} CONST,
-                    max_result_bytes = {{ int64 .Values.sqlGateway.limits.maxResultBytes }} CONST,
-                    max_memory_usage = {{ int64 .Values.sqlGateway.limits.maxMemoryUsage }} CONST;
+                    max_execution_time = {{ include "traceroot.sqlGateway.limit" (dict "name" "maxExecutionTime" "value" .Values.sqlGateway.limits.maxExecutionTime) }} CONST,
+                    max_result_rows = {{ include "traceroot.sqlGateway.limit" (dict "name" "maxResultRows" "value" .Values.sqlGateway.limits.maxResultRows) }} CONST,
+                    max_result_bytes = {{ include "traceroot.sqlGateway.limit" (dict "name" "maxResultBytes" "value" .Values.sqlGateway.limits.maxResultBytes) }} CONST,
+                    max_memory_usage = {{ include "traceroot.sqlGateway.limit" (dict "name" "maxMemoryUsage" "value" .Values.sqlGateway.limits.maxMemoryUsage) }} CONST;
                 CREATE USER IF NOT EXISTS {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}
                     IDENTIFIED WITH sha256_hash BY '${RO_HASH}'
                     SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
@@ -183,7 +186,7 @@ spec:
                     SETTINGS PROFILE '{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.settingsProfile" "value" .Values.sqlGateway.settingsProfile) }}';
                 GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.spans_public_v1  TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
                 GRANT SELECT ON {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.traces_public_v1 TO {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }};
-              "
+              " | "${CH[@]}" --multiquery
               {{- end }}
 
               # ClickHouse redacts passwords in query_log, so echoing the
