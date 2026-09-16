@@ -78,18 +78,20 @@ spec:
                   printf '%s\n' "$DDL"; FAILED=1; continue
                 fi
                 printf '%s\n' "$DDL"
-                # A herestring rather than a pipe: grep -q exits at the first match, and
-                # under pipefail a producer that has not finished writing takes SIGPIPE
-                # and fails the whole pipeline, turning a correct definer into a
-                # verification failure once the definition is larger than a pipe buffer.
-                # Anchored on the trailing clause. A bare name match would accept a
-                # different, longer account -- sql_gateway_writer_admin contains
-                # sql_gateway_writer -- which is exactly the substitution this exists
-                # to catch. -F because the account name is operator-supplied.
-                if grep -qF "DEFINER = {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} SQL SECURITY DEFINER" <<<"$DDL"; then
+                # Compared against the whole header, not searched for anywhere in the
+                # definition. clickhouse-client returns the DDL on one line with literal
+                # \n escapes, so everything before the first "\nAS " is exactly
+                # "CREATE VIEW <db>.<view>\nDEFINER = <account> SQL SECURITY DEFINER".
+                # An unanchored search over the whole string would accept a view whose
+                # real definer is another account and whose body merely contains the
+                # expected phrase, which is a string literal away for anyone who can
+                # create a view.
+                HEADER="${DDL%%\\nAS *}"
+                if [ "$HEADER" = "CREATE VIEW {{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}.${VIEW}\nDEFINER = {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }} SQL SECURITY DEFINER" ]; then
                   echo "OK: $VIEW is owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}"
                 else
-                  echo "FAIL: $VIEW is not owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}"; FAILED=1
+                  echo "FAIL: $VIEW is not owned by {{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}, its header is:"
+                  printf '%s\n' "$HEADER"; FAILED=1
                 fi
               done
 

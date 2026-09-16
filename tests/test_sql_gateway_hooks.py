@@ -518,22 +518,32 @@ class TestRendered:
         assert "FAILED=%d" % expect_failed in out, "%s: %s" % (name, out)
 
     @pytest.mark.parametrize(
-        "definer,expect_failed",
+        "name,definer,body,expect_failed",
         [
-            ("sql_gateway_writer", 0),
+            ("correct", "sql_gateway_writer", "SELECT 1", 0),
             # A longer account containing the expected name must not pass.
-            ("sql_gateway_writer_admin", 1),
-            ("default", 1),
+            ("longer account", "sql_gateway_writer_admin", "SELECT 1", 1),
+            ("admin", "default", "SELECT 1", 1),
+            # The body is attacker-reachable for anyone who can create a view, so the
+            # expected phrase appearing inside it must not approve another definer.
+            (
+                "phrase hidden in the body",
+                "evil_account",
+                "SELECT 'DEFINER = sql_gateway_writer SQL SECURITY DEFINER' AS x",
+                1,
+            ),
         ],
     )
-    def test_definer_check_is_not_a_prefix_match(self, definer, expect_failed):
+    def test_the_definer_is_read_from_the_header_only(self, name, definer, body, expect_failed):
         block = self._block(self._verify_script(), "isolation would rest on nothing")
+        # The shape clickhouse-client actually returns: one line, with literal \n
+        # escapes rather than real newlines.
         stub = (
-            'echo "CREATE VIEW default.v DEFINER = %s SQL SECURITY DEFINER"; echo "AS SELECT 1"; return 0;'
-            % definer
+            '''printf '%%s\\n' "CREATE VIEW default.${VIEW}\\nDEFINER = %s SQL SECURITY DEFINER\\nAS %s"; return 0;'''
+            % (definer, body)
         )
         out = _run_block(self._verify_script(), block, stub, "CH_ADMIN")
-        assert "FAILED=%d" % expect_failed in out, "%s: %s" % (definer, out)
+        assert "FAILED=%d" % expect_failed in out, "%s: %s" % (name, out)
 
     def test_readonly_user_never_gets_the_admin_password(self):
         """The gateway user's whole purpose is not being the admin."""
@@ -798,7 +808,7 @@ while [ $# -gt 0 ]; do
 done
 case "$q" in
   *"SELECT version()"*) echo "25.2.1" ;;
-  *"SHOW CREATE VIEW"*) echo "CREATE VIEW v DEFINER = ${DEFINER:-sql_gateway_writer} SQL SECURITY DEFINER AS SELECT 1" ;;
+  *"SHOW CREATE VIEW"*) v="${q##* }"; printf '%s\\n' "CREATE VIEW ${v}\\nDEFINER = ${DEFINER:-sql_gateway_writer} SQL SECURITY DEFINER\\nAS SELECT 1" ;;
   *"_public_v1(project_id"*) echo "0" ;;
   *"LIMIT 0"*) echo "Code: 497. DB::Exception: ACCESS_DENIED" >&2; exit 1 ;;
   *"SHOW GRANTS FOR"*)
