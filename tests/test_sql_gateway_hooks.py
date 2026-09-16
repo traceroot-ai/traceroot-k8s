@@ -634,9 +634,12 @@ class TestRendered:
         assert "FROM system.role_grants" in script, (
             "REVOKE ALL PRIVILEGES leaves role membership untouched"
         )
-        assert 'GRANT SELECT ON %s.spans_public_v1 TO sql_gateway_ro"' % database in script, (
-            "the convergence check must name the configured database"
-        )
+        # The post-check that decides whether convergence worked, matched on its own
+        # shape rather than on where a quote happens to land.
+        for view in ("spans_public_v1", "traces_public_v1"):
+            assert 'grep -vxF "GRANT SELECT ON %s.%s TO sql_gateway_ro"' % (database, view) in script, (
+                "the convergence check must accept %s only in the configured database" % view
+            )
         assert "still holds grants beyond the two curated views" in script
         assert "exit 1" in script[script.index("still holds grants"):][:300], (
             "a convergence that did not converge must fail the hook"
