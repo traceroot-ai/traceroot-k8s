@@ -205,10 +205,18 @@ migrations:
 # that customer SQL actually runs as, holding SELECT on the views only and
 # capped by a readonly settings profile.
 #
-# Off by default. Enabling creates database users and requires granting the
-# ClickHouse admin access management (see the clickhouse block below), neither of
-# which an installation that does not serve the gateway needs.
+# The writer is provisioned on every install, gateway or not: the ClickHouse
+# migration creates the views with DEFINER = writerUser unconditionally, and a
+# missing definer fails that migration and with it the release. With the gateway
+# off the writer is given a generated password that is never stored, because
+# nothing authenticates as it.
+#
+# The flag below gates the rest: the read-only user, its settings profile, its
+# grants on the views, and the credentials the rest Deployment receives.
 sqlGateway:
+  # Off by default. Enabling provisions the account customer SQL runs as and
+  # hands its credentials to rest, which an installation that does not serve the
+  # public endpoint has no reason to do.
   enabled: false
   # Also runs a hook after the migration that asserts the views carry the expected
   # definer and that the read-only user is refused the physical tables.

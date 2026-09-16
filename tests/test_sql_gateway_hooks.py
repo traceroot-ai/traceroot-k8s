@@ -10,9 +10,12 @@ things about the chart keep that true, and all three break quietly:
 * the hooks must not carry ``hook-succeeded``. Helm deletes the Job and its pod
   the moment the run succeeds, and engineers holding read-only cluster access
   cannot query ClickHouse to find out what happened instead;
-* none of it may render unless ``sqlGateway.enabled``. Enabling creates database
-  users and needs the ClickHouse admin to hold access management, which an
-  installation that does not serve the gateway should not be given.
+* the writer must be provisioned on every install, because the migration creates
+  the views with ``DEFINER = <writer>`` whether or not the gateway serves traffic,
+  and a missing definer fails the migration and with it the release;
+* everything the gateway alone needs -- the read-only user, its profile, its grants
+  on the views, and the credentials rest receives -- must stay behind
+  ``sqlGateway.enabled``, because that account is what customer SQL runs as.
 
 The structural checks run unconditionally; the render checks run when Helm is
 installed.
@@ -52,10 +55,22 @@ def test_gateway_is_off_by_default():
     assert _values()["sqlGateway"]["enabled"] is False
 
 
-def test_gateway_templates_are_gated_on_the_flag():
-    for name in (_PROVISION, _VERIFY):
-        assert "{{- if" in _template_text(name).splitlines()[0]
-        assert ".Values.sqlGateway.enabled" in _template_text(name)
+def test_verification_is_gated_on_the_flag():
+    assert "{{- if" in _template_text(_VERIFY).splitlines()[0]
+    assert ".Values.sqlGateway.enabled" in _template_text(_VERIFY)
+
+
+def test_provisioning_is_not_gated_but_its_readonly_half_is():
+    """The writer is unconditional; the account customer SQL runs as is not.
+
+    A top-level gate here is the regression this guards: it would leave every
+    gateway-off install without the definer the ClickHouse migration requires.
+    """
+    text = _template_text(_PROVISION)
+    assert "{{- if" not in text.splitlines()[0], (
+        "gating the whole template leaves migration 012 without its definer"
+    )
+    assert ".Values.sqlGateway.enabled" in text, "the read-only half must still be gated"
 
 
 # Every channel through which the chart could widen the ClickHouse admin. It has no
@@ -143,6 +158,7 @@ def test_passwords_are_not_embedded_as_sql_literals():
     assert "sha256_password" not in text
     for var in ("SQL_GATEWAY_WRITER_PASSWORD", "SQL_GATEWAY_RO_PASSWORD"):
         assert "BY '${%s}'" % var not in text
+        assert "BY '${%s:-}'" % var not in text
 
 
 @pytest.mark.parametrize("name", [_PROVISION, _VERIFY])
@@ -205,9 +221,87 @@ class TestRendered:
     def _names(docs) -> set:
         return {d.get("metadata", {}).get("name", "") for d in docs}
 
-    def test_nothing_gateway_renders_when_disabled(self):
+    def test_only_the_writer_is_provisioned_when_disabled(self):
+        """The migration creates definer-owned views on every install, so the definer exists on every install."""
         names = self._names(self._render())
-        assert not [n for n in names if _PROVISION in n or _VERIFY in n]
+        assert [n for n in names if _PROVISION in n], (
+            "without this Job, migration 012 has no definer and the release fails"
+        )
+        assert not [n for n in names if _VERIFY in n]
+
+        script = self._provision_script()
+        assert "CREATE USER IF NOT EXISTS sql_gateway_writer" in script
+        assert "GRANT SELECT ON default.spans  TO sql_gateway_writer" in script
+        for absent in (
+            "sql_gateway_ro",
+            "sql_readonly_profile",
+            "spans_public_v1",
+            "traces_public_v1",
+            "SQL_GATEWAY_RO_PASSWORD",
+        ):
+            assert absent not in script, (
+                "%s belongs to the gateway and must not be provisioned when it is off" % absent
+            )
+
+    def test_the_writer_password_is_optional_only_when_the_gateway_is_off(self):
+        """Off, the key is normally absent and a required reference would stop the pod.
+
+        On, it is part of the documented contract, and an absent key should fail
+        the release rather than quietly provision a generated password that the
+        application does not hold.
+        """
+        def writer_ref(docs):
+            for d in docs:
+                if _PROVISION not in d.get("metadata", {}).get("name", ""):
+                    continue
+                for e in d["spec"]["template"]["spec"]["containers"][0]["env"]:
+                    if e["name"] == "SQL_GATEWAY_WRITER_PASSWORD":
+                        return e["valueFrom"]["secretKeyRef"]
+            raise AssertionError("writer password reference did not render")
+
+        assert writer_ref(self._render()).get("optional") is True
+        assert writer_ref(self._render(*self.ENABLED)).get("optional") is not True
+
+    @pytest.mark.parametrize(
+        "setup,expect_alter",
+        [
+            ("SQL_GATEWAY_WRITER_PASSWORD=s3cretvaluehere", True),
+            ("SQL_GATEWAY_WRITER_PASSWORD=''", False),
+            ("unset SQL_GATEWAY_WRITER_PASSWORD", False),
+        ],
+        ids=["supplied", "empty", "unset"],
+    )
+    def test_a_generated_writer_password_never_replaces_a_real_one(self, setup, expect_alter):
+        """The reconciling ALTER runs only for a password someone supplied.
+
+        Without that condition every gateway-off upgrade would rotate the writer to
+        a fresh random password. Harmless while the views are definer-owned, but it
+        would silently break the moment a supplied password arrives out of order.
+        """
+        script = self._provision_script()
+        start = script.index("WRITER_HASH=")
+        block = script[start : script.index("\nfi", start) + 3]
+        harness = "\n".join([
+            "set -uo pipefail",
+            # sha256sum is Linux-only and the digest is not what is under test. This
+            # stub keeps the input visible, so a generated password is distinguishable
+            # from the hash of an empty one.
+            "sha256sum() { printf '%s  -\\n' \"$(cat | tr -cd '[:alnum:]' | cut -c1-16)\"; }",
+            setup,
+            block,
+            'echo "ALTER=[${WRITER_ALTER}]"',
+            'echo "HASH=[${WRITER_HASH}]"',
+        ])
+        out = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, check=True).stdout
+        alter = re.search(r"ALTER=\[(.*)\]", out).group(1)
+        digest = re.search(r"HASH=\[(.*)\]", out).group(1)
+        assert digest, "the writer must always end up with a password"
+        if expect_alter:
+            assert alter.startswith("ALTER USER sql_gateway_writer IDENTIFIED")
+            assert digest == "s3cretvaluehere", "the supplied password was not the one hashed"
+        else:
+            assert alter == "", "an unsupplied password must not overwrite an existing one"
+            assert digest != "", "the generated branch did not run"
 
     def test_both_jobs_render_when_enabled(self):
         names = self._names(self._render(*self.ENABLED))
@@ -318,6 +412,12 @@ class TestRendered:
 
         assert ro_env(self._render()) == set()
         assert ro_env(self._render(*self.ENABLED)) == {"traceroot-rest"}
+
+    def _provision_script(self, *extra: str) -> str:
+        for d in self._render(*extra):
+            if _PROVISION in d.get("metadata", {}).get("name", ""):
+                return d["spec"]["template"]["spec"]["containers"][0]["args"][0]
+        raise AssertionError("provisioning job did not render")
 
     def _verify_script(self) -> str:
         for d in self._render(*self.ENABLED):
