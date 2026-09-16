@@ -572,6 +572,60 @@ class TestRendered:
             )
             assert ttl == 2592000, "%s lost the configured value: %r" % (name, ttl)
 
+    def test_provisioning_grants_exactly_the_four_expected_selects(self):
+        """The suite's headline claim: the read-only user holds no grant on the raw tables.
+
+        Every check elsewhere runs against a stubbed client and proves the hook's
+        branching, never what provisioning actually grants. Adding
+        `GRANT SELECT ON <db>.spans TO <ro>` to the template passed the whole suite.
+        """
+        script = self._provision_script(*self.ENABLED)
+        granted = set(re.findall(r"GRANT SELECT ON (\S+)\s+TO (\S+?);", script))
+        assert granted == {
+            ("default.spans", "sql_gateway_writer"),
+            ("default.traces", "sql_gateway_writer"),
+            ("default.spans_public_v1", "sql_gateway_ro"),
+            ("default.traces_public_v1", "sql_gateway_ro"),
+        }, "provisioning grants changed: %s" % sorted(granted)
+
+    def test_the_readonly_account_is_given_the_capped_profile(self):
+        """Dropping CONST, or the SETTINGS PROFILE clause, left the suite green.
+
+        The profile is what bounds one query's rows, time and memory, so an account
+        created without it is uncapped while looking identical everywhere else.
+        """
+        script = self._provision_script(*self.ENABLED)
+        assert script.count("CONST") == 8, "each of the four caps is CONST on create and on alter"
+        assert "readonly = 1" in script
+        assert script.count("SETTINGS PROFILE 'sql_readonly_profile'") == 2, (
+            "the read-only user must carry the profile on both CREATE and ALTER"
+        )
+        assert "ALTER SETTINGS PROFILE sql_readonly_profile" in script, (
+            "without the ALTER an existing profile keeps its old, wider caps"
+        )
+
+    def test_the_probes_name_the_right_tables_and_run_as_the_right_user(self):
+        """Inverting the denial loop to the views, or swapping CH_RO for CH_ADMIN, was green.
+
+        The execution tests stub the client, so nothing read the query text; both
+        mutations turn the hook into one that asserts the opposite of the design.
+        """
+        script = self._verify_script()
+        assert "for TABLE in spans traces; do" in script, (
+            "the denial loop must name the physical tables, not the curated views"
+        )
+        denial = script[script.index("for TABLE in spans traces"):]
+        denial = denial[: denial.index("done")]
+        assert '"${CH_RO[@]}"' in denial and "CH_ADMIN" not in denial, (
+            "denial must be probed as the read-only user"
+        )
+        read = script[script.index("for VIEW in spans_public_v1 traces_public_v1; do", script.index("curated views must stay readable")):]
+        read = read[: read.index("done")]
+        assert '"${CH_RO[@]}"' in read and "CH_ADMIN" not in read, (
+            "the read probe must run as the read-only user or it proves nothing"
+        )
+        assert '--user "sql_gateway_ro"' in script, "CH_RO must authenticate as the read-only account"
+
     def test_orphan_scan_covers_the_physical_tables_not_just_the_views(self):
         """A stale writer holds SELECT on the raw tables, which is the worse leftover
         and the one a view-only scan would never surface."""
@@ -601,6 +655,71 @@ class TestRendered:
         assert "FAILED=0" in out, "%s: the informational scan failed the Job: %s" % (name, out)
         if name == "scan failed":
             assert "OK:" not in out, "a scan that never ran reported the all-clear: %s" % out
+
+    # A stub on PATH rather than a shell function: CH_RO is built as
+    # `env VAR=... clickhouse-client`, and env execs the real binary, so a function
+    # would only ever stub the admin half of the script.
+    _STUB = """#!/usr/bin/env bash
+q=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--query" ]; then q="$2"; shift; fi
+  shift
+done
+case "$q" in
+  *"SELECT version()"*) echo "25.2.1" ;;
+  *"SHOW CREATE VIEW"*) echo "CREATE VIEW v DEFINER = ${DEFINER:-sql_gateway_writer} SQL SECURITY DEFINER AS SELECT 1" ;;
+  *"_public_v1(project_id"*) echo "0" ;;
+  *"LIMIT 0"*) echo "Code: 497. DB::Exception: ACCESS_DENIED" >&2; exit 1 ;;
+  *"SHOW GRANTS FOR"*)
+    printf 'GRANT SELECT ON default.spans_public_v1 TO sql_gateway_ro\n'
+    printf 'GRANT SELECT ON default.traces_public_v1 TO sql_gateway_ro\n'
+    ${EXTRA_GRANT:+printf '%s\n' "$EXTRA_GRANT"} ;;
+  *"getSetting('readonly')"*) echo "${READONLY:-1}" ;;
+  *"SETTINGS max_result_rows"*) echo "Code: 164. DB::Exception: READONLY" >&2; exit 1 ;;
+  *) : ;;
+esac
+exit 0
+"""
+
+    def _run_whole_verify(self, **env) -> int:
+        """Run the entire rendered hook with a stubbed client, and return its exit code."""
+        d = tempfile.mkdtemp()
+        try:
+            stub = os.path.join(d, "clickhouse-client")
+            with open(stub, "w") as f:
+                f.write(self._STUB)
+            os.chmod(stub, 0o755)
+            script = os.path.join(d, "verify.sh")
+            with open(script, "w") as f:
+                f.write(self._verify_script())
+            e = dict(os.environ)
+            e.update({
+                "PATH": d + os.pathsep + e["PATH"],
+                "CLICKHOUSE_ADMIN_PASSWORD": "admin",
+                "SQL_GATEWAY_RO_PASSWORD": "ro",
+            })
+            e.update({k: v for k, v in env.items()})
+            return subprocess.run(["bash", script], env=e, capture_output=True, text=True).returncode
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    @pytest.mark.parametrize(
+        "name,env,expect",
+        [
+            ("everything healthy", {}, 0),
+            ("view owned by someone else", {"DEFINER": "default"}, 1),
+            ("settings profile detached", {"READONLY": "0"}, 1),
+            ("read-only account widened", {"EXTRA_GRANT": "GRANT SELECT ON default.spans TO sql_gateway_ro"}, 1),
+        ],
+    )
+    def test_the_hook_exit_code_actually_reflects_the_checks(self, name, env, expect):
+        """Helm reads the exit status, and nothing else asserted it.
+
+        Deleting `exit 1` from the summary, or appending `exit 0` after it, left the
+        suite green while turning the hook into one that can never fail a release.
+        The FAILED variable is an implementation detail; this is the contract.
+        """
+        assert self._run_whole_verify(**env) == expect, name
 
     def test_verify_toggle_actually_gates_the_verification_job(self):
         names = self._names(self._render(*self.ENABLED, "--set", "sqlGateway.verify=false"))

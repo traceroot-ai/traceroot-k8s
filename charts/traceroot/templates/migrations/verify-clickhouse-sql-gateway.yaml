@@ -188,14 +188,28 @@ spec:
               # curated views omit. A scan of the views alone would never see it.
               echo "--- accounts with SELECT on the gateway's tables and views ---"
               if ! ORPHANS=$("${CH_ADMIN[@]}" --query "
-                SELECT DISTINCT user_name, table FROM system.grants
-                WHERE database = '{{ include "traceroot.sqlGateway.identifier" (dict "name" "clickhouse.database" "value" .Values.clickhouse.database) }}'
-                  AND access_type = 'SELECT'
-                  AND user_name IS NOT NULL
-                  AND (
-                        (table IN ('spans_public_v1', 'traces_public_v1') AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.readonlyUser" "value" .Values.sqlGateway.readonlyUser) }}')
-                     OR (table IN ('spans', 'traces')                     AND user_name != '{{ include "traceroot.sqlGateway.identifier" (dict "name" "sqlGateway.writerUser" "value" .Values.sqlGateway.writerUser) }}')
-                  )
+                SELECT DISTINCT concat(
+                    ifNull(user_name, concat('role ', ifNull(role_name, '?'))),
+                    ' on ', ifNull(database, '*'), '.', ifNull(table, '*')
+                  ) AS holder
+                FROM system.grants
+                WHERE access_type = 'SELECT'
+                  -- NULL means 'every database' and 'every table', which is a wider
+                  -- grant than any named one, not a row to skip. An equality filter
+                  -- drops those rows, and NULL user_name is how a grant held by a
+                  -- ROLE is recorded, so the three shapes that matter most were the
+                  -- three this scan could not see.
+                  AND (database IS NULL OR database = '{{ .Values.clickhouse.database }}')
+                  AND (table IS NULL OR table IN ('spans', 'traces', 'spans_public_v1', 'traces_public_v1'))
+                  -- The ClickHouse admin legitimately holds everything; it is the
+                  -- account the application itself reads and writes with.
+                  AND ifNull(user_name, '') != '{{ .Values.clickhouse.auth.username }}'
+                  -- ifNull throughout: comparing a NULL column returns NULL, and NOT NULL
+                  -- is NULL, so a bare inequality here would filter out the role rows
+                  -- this exists to surface.
+                  AND NOT (ifNull(user_name, '') = '{{ .Values.sqlGateway.writerUser }}' AND ifNull(table, '') IN ('spans', 'traces'))
+                  AND NOT (ifNull(user_name, '') = '{{ .Values.sqlGateway.readonlyUser }}' AND ifNull(table, '') IN ('spans_public_v1', 'traces_public_v1'))
+                ORDER BY holder
               " 2>&1); then
                 # Still not a failure, for the reason above, but not an OK either: a scan
                 # that did not run found nothing only because it looked at nothing.
