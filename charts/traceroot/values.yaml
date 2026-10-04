@@ -284,7 +284,8 @@ llmKeys:
     anthropicApiKey: "anthropic-api-key"
     openaiApiKey: "openai-api-key"
     daytonaApiKey: "daytona-api-key"
-    # Optional; read by the detector worker only. See templates/detector/deployment.yaml.
+    # Optional; read by the detector worker only. Add this field to the LLM keys
+    # secret to run signal grouping on Jev; without it grouping uses OpenAI.
     typesafeApiKey: "typesafe-api-key"
 
 betterAuth:
