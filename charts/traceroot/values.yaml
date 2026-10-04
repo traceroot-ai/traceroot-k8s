@@ -284,6 +284,8 @@ llmKeys:
     anthropicApiKey: "anthropic-api-key"
     openaiApiKey: "openai-api-key"
     daytonaApiKey: "daytona-api-key"
+    # Optional; read by the detector worker only. See templates/detector/deployment.yaml.
+    typesafeApiKey: "typesafe-api-key"
 
 betterAuth:
   url: ""
