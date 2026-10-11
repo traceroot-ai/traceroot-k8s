@@ -349,7 +349,7 @@ smtp:
 
 # --- Sign-up follow-ups (optional — set enabled to send the welcome email and the Slack post) ---
 signup:
-  enabled: false
+  enabled: false            # sets TRACEROOT_CLOUD=true on web; the app reads that flag only for these follow-ups
   emailFrom: ""             # "Name <address>" on a domain verified with the email provider
   emailReplyTo: ""          # a real mailbox; replies and mailto opt-outs land here
   resendProductTopicId: ""  # the email provider's topic that records opt-out

@@ -81,4 +81,9 @@ class TestRendered:
             assert len(holders) == 1 and holders[0].endswith("-web")
 
     def test_disabled_signup_renders_none_of_the_plain_settings(self):
-        assert all(var not in env for env in self._render().values() for var in SIGNUP)
+        envs = self._render(
+            "--set", "signup.emailFrom=" + SIGNUP["TRACEROOT_EMAIL_FROM"],
+            "--set", "signup.emailReplyTo=" + SIGNUP["TRACEROOT_EMAIL_REPLY_TO"],
+            "--set", "signup.resendProductTopicId=" + SIGNUP["RESEND_PRODUCT_TOPIC_ID"],
+        )
+        assert all(var not in env for env in envs.values() for var in SIGNUP)
