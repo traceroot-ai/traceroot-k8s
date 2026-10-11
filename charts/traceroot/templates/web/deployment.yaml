@@ -243,6 +243,19 @@ spec:
                   optional: true
             {{- end }}
             {{- end }}
+            # --- Sign-up follow-ups (conditional) ---
+            {{- if .Values.signup }}
+            {{- if .Values.signup.enabled }}
+            - name: TRACEROOT_CLOUD
+              value: "true"
+            - name: TRACEROOT_EMAIL_FROM
+              value: {{ .Values.signup.emailFrom | quote }}
+            - name: TRACEROOT_EMAIL_REPLY_TO
+              value: {{ .Values.signup.emailReplyTo | quote }}
+            - name: RESEND_PRODUCT_TOPIC_ID
+              value: {{ .Values.signup.resendProductTopicId | quote }}
+            {{- end }}
+            {{- end }}
             # --- Enterprise license (conditional) ---
             {{- if .Values.enterprise }}
             {{- if .Values.enterprise.existingSecret }}

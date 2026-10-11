@@ -347,6 +347,13 @@ smtp:
     resendApiKey: "resend-api-key"
     emailTokenSecret: "email-token-secret"
 
+# --- Sign-up follow-ups (optional — set enabled to send the welcome email and the Slack post) ---
+signup:
+  enabled: false
+  emailFrom: ""             # "Name <address>" on a domain verified with the email provider
+  emailReplyTo: ""          # a real mailbox; replies and mailto opt-outs land here
+  resendProductTopicId: ""  # the email provider's topic that records opt-out
+
 # --- Enterprise license (optional) ---
 enterprise:
   existingSecret: ""
