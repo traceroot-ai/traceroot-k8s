@@ -208,6 +208,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.slack.existingSecret }}
                   key: {{ .Values.slack.keys.redirectUri }}
+            - name: TRACEROOT_SIGNUP_SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.slack.existingSecret }}
+                  key: {{ .Values.slack.keys.signupWebhookUrl }}
+                  optional: true
             {{- end }}
             {{- end }}
             # --- SMTP (conditional) ---
@@ -223,6 +229,18 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.smtp.existingSecret }}
                   key: {{ .Values.smtp.keys.mailFrom }}
+            - name: RESEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.smtp.existingSecret }}
+                  key: {{ .Values.smtp.keys.resendApiKey }}
+                  optional: true
+            - name: TRACEROOT_EMAIL_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.smtp.existingSecret }}
+                  key: {{ .Values.smtp.keys.emailTokenSecret }}
+                  optional: true
             {{- end }}
             {{- end }}
             # --- Enterprise license (conditional) ---

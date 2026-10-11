@@ -332,6 +332,9 @@ slack:
     clientSecret: "slack-client-secret"
     stateSecret: "slack-state-secret"
     redirectUri: "slack-redirect-uri"
+    # Optional; read by web only. Incoming webhook for the "new user registered"
+    # post; without it sign-up skips the post.
+    signupWebhookUrl: "signup-webhook-url"
 
 # --- Email / SMTP (optional — set existingSecret to enable) ---
 smtp:
@@ -339,6 +342,10 @@ smtp:
   keys:
     url: "smtp-url"
     mailFrom: "smtp-mail-from"
+    # Optional; read by web only. Resend API key for the sign-up welcome email
+    # and the opt-out contact, plus the secret that signs opt-out links.
+    resendApiKey: "resend-api-key"
+    emailTokenSecret: "email-token-secret"
 
 # --- Enterprise license (optional) ---
 enterprise:
