@@ -1,8 +1,8 @@
 apiVersion: v2
 name: traceroot
-description: Observability and self-improving layer for AI agents
+description: Open source AI agent improvement platform. Find the patterns in your agent's production issues. Ship verified fixes with your coding agent.
 type: application
-version: 1.1.1
+version: 1.1.2
 appVersion: "0.1.0"
 
 home: https://traceroot.ai
