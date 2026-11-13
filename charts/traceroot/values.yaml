@@ -324,6 +324,14 @@ googleOAuth:
     clientId: "google-client-id"
     clientSecret: "google-client-secret"
 
+# --- AgentID OAuth (optional — set existingSecret to enable) ---
+# Callback to register: https://<host>/api/auth/callback/agentid
+agentidOAuth:
+  existingSecret: ""
+  keys:
+    clientId: "agentid-client-id"
+    clientSecret: "agentid-client-secret"
+
 # --- Slack (optional — set existingSecret to enable Slack workspace OAuth) ---
 slack:
   existingSecret: ""
