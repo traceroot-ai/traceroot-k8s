@@ -1,3 +1,9 @@
+import shutil
+
+import pytest
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
 def test_worker_can_call_the_web_service(env_by_deployment):
     env = env_by_deployment(
         "--set", "web.port=3100",
