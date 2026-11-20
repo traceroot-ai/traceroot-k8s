@@ -53,6 +53,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.redis.existingSecret }}
                   key: {{ .Values.redis.secretKeys.url }}
+            - name: TRACEROOT_UI_URL
+              value: "http://{{ include "traceroot.fullname" . }}-web:{{ .Values.web.port }}"
+            - name: INTERNAL_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.keys.internalApiSecret }}
             - name: S3_BUCKET_NAME
               value: {{ .Values.s3.bucket | quote }}
             - name: S3_ENDPOINT_URL
