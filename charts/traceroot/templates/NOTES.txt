@@ -1,4 +1,4 @@
-TraceRoot is installing into namespace {{ .Release.Namespace }}.
+traceroot is installing into namespace {{ .Release.Namespace }}.
 
   helm status {{ .Release.Name }} -n {{ .Release.Namespace }}
 

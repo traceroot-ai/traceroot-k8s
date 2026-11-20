@@ -83,7 +83,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.llmKeys.existingSecret }}
                   key: {{ .Values.llmKeys.keys.openaiApiKey }}
-            # TraceRoot's TypeSafe key: signal grouping runs Jev on it when set.
+            # traceroot's TypeSafe key: signal grouping runs Jev on it when set.
             # Optional, so a secret without it starts the worker without the
             # variable, and grouping uses OpenAI.
             - name: TYPESAFE_API_KEY
