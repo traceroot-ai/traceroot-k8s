@@ -10,7 +10,7 @@ sources:
   - https://github.com/traceroot-ai/traceroot-k8s
   - https://github.com/traceroot-ai/traceroot
 maintainers:
-  - name: TraceRoot.AI
+  - name: traceroot
     url: https://github.com/traceroot-ai
 
 dependencies:

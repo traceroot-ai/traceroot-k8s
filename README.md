@@ -1,6 +1,6 @@
 # traceroot-k8s
 
-Kubernetes configuration and Helm chart for [TraceRoot](https://github.com/traceroot-ai/traceroot).
+Kubernetes configuration and Helm chart for [traceroot](https://github.com/traceroot-ai/traceroot).
 
 ## Install
 

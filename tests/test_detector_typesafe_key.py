@@ -1,4 +1,4 @@
-"""Chart guard: the detector worker gets TraceRoot's TypeSafe key, optionally.
+"""Chart guard: the detector worker gets traceroot's TypeSafe key, optionally.
 
 Signal grouping runs Jev on TYPESAFE_API_KEY when it is set and falls back to
 OpenAI otherwise, so the key is optional end to end: a secret without the
