@@ -12,9 +12,11 @@ helm install traceroot traceroot/traceroot -f my-values.yaml
 
 ## Requirements
 
-The chart deploys the application only. It expects PostgreSQL, ClickHouse, Redis, and an
+The chart deploys the application and, by default, a ClickHouse instance (the bundled
+Bitnami subchart, `clickhouse.deploy: true`). It expects PostgreSQL, Redis, and an
 S3-compatible object store to exist already, and reads their credentials from Kubernetes
-Secrets you provide.
+Secrets you provide. To use your own ClickHouse, set `clickhouse.deploy: false` and set
+`clickhouse.host` and the other `clickhouse.*` connection values.
 
 To provision that infrastructure on AWS as well, use
 [traceroot-terraform-aws](https://github.com/traceroot-ai/traceroot-terraform-aws), which
@@ -29,7 +31,8 @@ See [`charts/traceroot/values.yaml`](charts/traceroot/values.yaml) for the full 
 | `image.tag` | application version to run |
 | `ingress.host` | public hostname |
 | `ingress.blockInternalRoutes` | keep `/api/v1/internal` off the load balancer (default `true`) |
-| `postgresql.*`, `redis.*`, `clickhouse.*`, `s3.*` | external service connection details |
+| `postgresql.*`, `redis.*`, `s3.*` | external service connection details |
+| `clickhouse.deploy`, `clickhouse.*` | bundled ClickHouse (default), or connection details for an external one |
 | `*.existingSecret` / `secretKeys` | names of the Kubernetes Secrets holding credentials |
 
 Secrets are referenced by name, never set as values in this chart.
