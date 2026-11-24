@@ -117,3 +117,31 @@ that bounds nothing.
 {{- end -}}
 {{- int64 $value -}}
 {{- end }}
+
+{{/*
+The hosted MCP server. Assistants connect at https://<mcp.host>/mcp and sign in
+with the web app, whose OAuth issuer is <betterAuth.url>/api/auth. Every one of
+these values is compared byte for byte by the assistants, so they are derived
+here once, not typed per service.
+*/}}
+{{- define "traceroot.mcp.resourceUrl" -}}
+{{- printf "https://%s/mcp" .Values.mcp.host -}}
+{{- end -}}
+
+{{- define "traceroot.mcp.issuer" -}}
+{{- printf "%s/api/auth" (trimSuffix "/" .Values.betterAuth.url) -}}
+{{- end -}}
+
+{{- define "traceroot.mcp.validate" -}}
+{{- if .Values.mcp.enabled -}}
+{{- if not .Values.mcp.host -}}
+{{- fail "mcp.enabled needs mcp.host (the public hostname, e.g. mcp.example.com)" -}}
+{{- end -}}
+{{- if or (contains "/" .Values.mcp.host) (contains ":" .Values.mcp.host) -}}
+{{- fail "mcp.host is a bare hostname, without a scheme, port or path" -}}
+{{- end -}}
+{{- if not (hasPrefix "https://" .Values.betterAuth.url) -}}
+{{- fail "mcp.enabled needs betterAuth.url, the web app's public https URL (the OAuth issuer is derived from it)" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

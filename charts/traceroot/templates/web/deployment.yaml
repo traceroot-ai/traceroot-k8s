@@ -251,6 +251,16 @@ spec:
             {{- end }}
             {{- end }}
             # --- Additional env vars (escape hatch) ---
+            {{- if .Values.mcp.enabled }}
+            # Turns on the OAuth provider assistants sign in with; the MCP server
+            # at this URL is the only resource it issues tokens for.
+            - name: MCP_RESOURCE_URL
+              value: {{ include "traceroot.mcp.resourceUrl" . | quote }}
+            {{- end }}
+            {{- with .Values.web.trustedProxyCidrs }}
+            - name: AUTH_TRUSTED_PROXY_CIDRS
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.additionalEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

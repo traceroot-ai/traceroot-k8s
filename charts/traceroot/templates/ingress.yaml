@@ -22,6 +22,20 @@ metadata:
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   rules:
+    {{- if .Values.mcp.enabled }}
+    # Listed first: the MCP server's own hostname goes to it whole, including
+    # its /.well-known metadata and domain-verification files.
+    - host: {{ .Values.mcp.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "traceroot.fullname" . }}-mcp
+                port:
+                  number: {{ .Values.mcp.port }}
+    {{- end }}
     - {{- if .Values.ingress.host }}
       host: {{ .Values.ingress.host | quote }}
       {{- end }}

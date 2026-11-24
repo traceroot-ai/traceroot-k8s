@@ -1,0 +1,19 @@
+{{- if .Values.mcp.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "traceroot.fullname" . }}-mcp
+  labels:
+    {{- include "traceroot.labels" . | nindent 4 }}
+  annotations:
+    # The ALB's target-group probe; the endpoint itself answers 401 without a credential.
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.mcp.port }}
+      targetPort: {{ .Values.mcp.port }}
+  selector:
+    {{- include "traceroot.selectorLabels" . | nindent 4 }}
+    app: mcp
+{{- end }}
