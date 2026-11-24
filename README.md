@@ -15,8 +15,8 @@ helm install traceroot traceroot/traceroot -f my-values.yaml
 The chart deploys the application and, by default, a ClickHouse instance (the bundled
 Bitnami subchart, `clickhouse.deploy: true`). It expects PostgreSQL, Redis, and an
 S3-compatible object store to exist already, and reads their credentials from Kubernetes
-Secrets you provide. To use your own ClickHouse, set `clickhouse.deploy: false` and fill in
-the `clickhouse.*` connection values.
+Secrets you provide. To use your own ClickHouse, set `clickhouse.deploy: false` and set
+`clickhouse.host` and the other `clickhouse.*` connection values.
 
 To provision that infrastructure on AWS as well, use
 [traceroot-terraform-aws](https://github.com/traceroot-ai/traceroot-terraform-aws), which
