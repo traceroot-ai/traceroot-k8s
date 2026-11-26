@@ -64,8 +64,10 @@ spec:
               value: {{ .Values.s3.bucket | quote }}
             - name: S3_ENDPOINT_URL
               value: {{ .Values.s3.endpoint | quote }}
-            - name: AWS_DEFAULT_REGION
+            {{- if .Values.s3.region }}
+            - name: S3_REGION
               value: {{ .Values.s3.region | quote }}
+            {{- end }}
             - name: POLL_INTERVAL_SECONDS
               value: {{ .Values.worker.pollIntervalSeconds | quote }}
             - name: BATCH_SIZE
