@@ -39,6 +39,10 @@ spec:
                   key: {{ .Values.secrets.keys.internalApiSecret }}
             - name: TRACEROOT_UI_URL
               value: "http://{{ include "traceroot.fullname" . }}-web:{{ .Values.web.port }}"
+            {{- if .Values.betterAuth.url }}
+            - name: TRACEROOT_PUBLIC_UI_URL
+              value: {{ .Values.betterAuth.url | quote }}
+            {{- end }}
             - name: BACKEND_INTERNAL_URL
               value: "http://{{ include "traceroot.fullname" . }}-rest:{{ .Values.rest.port }}"
             - name: ENCRYPTION_KEY
