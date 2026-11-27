@@ -23,6 +23,10 @@ web:
   # app's auth middleware exempts it, so a 307 to sign-in never counts as
   # healthy. The kubelet probes below use the same path.
   healthcheckPath: /api/health
+  # Comma-separated CIDRs of the proxies in front of the web app (the load
+  # balancer's subnets). Lets the sign-in rate limits key on the real client
+  # address; see AUTH_TRUSTED_PROXY_CIDRS in the app. Empty trusts none.
+  trustedProxyCidrs: ""
   resources:
     requests:
       cpu: "250m"
@@ -99,6 +103,33 @@ detector:
   # Per-attempt LLM eval timeout (ms). High enough to absorb slow/throttled
   # BYOK providers (e.g. Z.AI glm) so their evals complete instead of timing out.
   evalTimeoutMs: "180000"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+mcp:
+  # The hosted MCP server: assistants (Claude, ChatGPT, Cursor, Gemini) connect at
+  # https://<host>/mcp, on the same load balancer under its own hostname, and
+  # sign in with the web app. Enabling it also turns on the web app's OAuth
+  # provider and lets rest accept its tokens. Needs betterAuth.url and a
+  # certificate that covers host.
+  enabled: false
+  host: ""
+  image:
+    repository: ""
+    tag: "latest"
+  replicas: 1
+  port: 8200
+  # Domain-verification values for app directories; empty serves 404.
+  openaiAppsChallenge: ""
+  # Comma-separated tokens from the Google Connected Console.
+  googleConnectedAppsTokens: ""
+  # Longest tool result in characters; empty keeps the server's default (80000).
+  maxResultChars: ""
   resources:
     requests:
       cpu: "250m"

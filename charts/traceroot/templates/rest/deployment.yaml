@@ -94,6 +94,14 @@ spec:
             # unlocks all tiers; read by ee.license.is_billing_enabled().
             - name: ENABLE_BILLING
               value: {{ .Values.enableBilling | quote }}
+            {{- if .Values.mcp.enabled }}
+            # Accept the OAuth tokens assistants get from the web app: issued by
+            # it, for the MCP server, each bound to one project.
+            - name: TRACEROOT_OAUTH_ISSUER
+              value: {{ include "traceroot.mcp.issuer" . | quote }}
+            - name: TRACEROOT_OAUTH_AUDIENCES
+              value: {{ include "traceroot.mcp.resourceUrl" . | quote }}
+            {{- end }}
             {{- with .Values.additionalEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

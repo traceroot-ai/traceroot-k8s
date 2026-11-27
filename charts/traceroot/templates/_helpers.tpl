@@ -117,3 +117,40 @@ that bounds nothing.
 {{- end -}}
 {{- int64 $value -}}
 {{- end }}
+
+{{/*
+The hosted MCP server. Assistants connect at https://<mcp.host>/mcp and sign in
+with the web app, whose OAuth issuer is <betterAuth.url>/api/auth. Every one of
+these values is compared byte for byte by the assistants, so they are derived
+here once, not typed per service.
+*/}}
+{{- define "traceroot.mcp.resourceUrl" -}}
+{{- printf "https://%s/mcp" .Values.mcp.host -}}
+{{- end -}}
+
+{{- define "traceroot.mcp.issuer" -}}
+{{- printf "%s/api/auth" (trimSuffix "/" .Values.betterAuth.url) -}}
+{{- end -}}
+
+{{- define "traceroot.mcp.validate" -}}
+{{- if .Values.mcp.enabled -}}
+{{- if not .Values.mcp.host -}}
+{{- fail "mcp.enabled needs mcp.host (the public hostname, e.g. mcp.example.com)" -}}
+{{- end -}}
+{{- if or (contains "/" .Values.mcp.host) (contains ":" .Values.mcp.host) -}}
+{{- fail "mcp.host is a bare hostname, without a scheme, port or path" -}}
+{{- end -}}
+{{- /* A DNS hostname: lowercase labels of at most 63 characters, at least two of them, 253 in all. */ -}}
+{{- if or (gt (len .Values.mcp.host) 253) (not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" .Values.mcp.host)) -}}
+{{- fail "mcp.host is a bare hostname, without a scheme, port or path" -}}
+{{- end -}}
+{{- /* Its own hostname: the MCP rule is listed first and takes "/" for its host. */ -}}
+{{- if eq .Values.mcp.host .Values.ingress.host -}}
+{{- fail "mcp.host must differ from ingress.host: the MCP server takes every path on its hostname" -}}
+{{- end -}}
+{{- $auth := urlParse (.Values.betterAuth.url | default "") -}}
+{{- if or (ne $auth.scheme "https") (not $auth.host) $auth.query $auth.fragment -}}
+{{- fail "mcp.enabled needs betterAuth.url, the web app's public https URL (the OAuth issuer is derived from it)" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

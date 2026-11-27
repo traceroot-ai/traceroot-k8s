@@ -29,6 +29,8 @@ See [`charts/traceroot/values.yaml`](charts/traceroot/values.yaml) for the full 
 | `image.tag` | application version to run |
 | `ingress.host` | public hostname |
 | `ingress.blockInternalRoutes` | keep `/api/v1/internal` off the load balancer (default `true`) |
+| `mcp.enabled`, `mcp.host` | run the hosted MCP server at `https://<mcp.host>/mcp` for AI assistants, and turn on the web app's sign-in for them (needs `betterAuth.url` and a certificate covering `mcp.host`) |
+| `web.trustedProxyCidrs` | proxy ranges in front of the web app, so sign-in rate limits see the real client address |
 | `postgresql.*`, `redis.*`, `clickhouse.*`, `s3.*` | external service connection details |
 | `*.existingSecret` / `secretKeys` | names of the Kubernetes Secrets holding credentials |
 

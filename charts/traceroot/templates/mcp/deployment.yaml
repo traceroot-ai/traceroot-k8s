@@ -1,0 +1,76 @@
+{{- include "traceroot.mcp.validate" . }}
+{{- if .Values.mcp.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "traceroot.fullname" . }}-mcp
+  labels:
+    {{- include "traceroot.labels" . | nindent 4 }}
+    app: mcp
+spec:
+  replicas: {{ .Values.mcp.replicas }}
+  selector:
+    matchLabels:
+      {{- include "traceroot.selectorLabels" . | nindent 6 }}
+      app: mcp
+  template:
+    metadata:
+      labels:
+        {{- include "traceroot.selectorLabels" . | nindent 8 }}
+        app: mcp
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: mcp
+          image: "{{ .Values.mcp.image.repository }}:{{ .Values.mcp.image.tag }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+            - containerPort: {{ .Values.mcp.port }}
+          env:
+            # Only its port is read: the server listens on it.
+            - name: MCP_SERVICE_URL
+              value: "http://0.0.0.0:{{ .Values.mcp.port }}"
+            # A tool call is the caller's credential passed to the public API.
+            - name: BACKEND_INTERNAL_URL
+              value: "http://{{ include "traceroot.fullname" . }}-rest:{{ .Values.rest.port }}"
+            # Read at startup: the server exits if the web app answers with an
+            # OAuth issuer other than MCP_OAUTH_ISSUER, and serves (logging a
+            # line) if the web app can't be reached yet.
+            - name: TRACEROOT_UI_URL
+              value: "http://{{ include "traceroot.fullname" . }}-web:{{ .Values.web.port }}"
+            - name: MCP_ALLOWED_HOSTS
+              value: {{ .Values.mcp.host | quote }}
+            - name: MCP_RESOURCE_URL
+              value: {{ include "traceroot.mcp.resourceUrl" . | quote }}
+            - name: MCP_OAUTH_ISSUER
+              value: {{ include "traceroot.mcp.issuer" . | quote }}
+            {{- with .Values.mcp.openaiAppsChallenge }}
+            - name: MCP_OPENAI_APPS_CHALLENGE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.mcp.googleConnectedAppsTokens }}
+            - name: MCP_GOOGLE_CONNECTED_APPS_TOKENS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.mcp.maxResultChars }}
+            - name: MCP_MAX_RESULT_CHARS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.additionalEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.mcp.port }}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.mcp.port }}
+            # The startup issuer check waits up to a minute for the web app.
+            initialDelaySeconds: 70
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.mcp.resources | nindent 12 }}
+{{- end }}
