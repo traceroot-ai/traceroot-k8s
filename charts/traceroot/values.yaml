@@ -55,13 +55,14 @@ worker:
   replicas: 1
   pollIntervalSeconds: "5"
   batchSize: "100"
+  concurrency: 2
   resources:
     requests:
       cpu: "250m"
-      memory: "512Mi"
+      memory: "2Gi"
     limits:
       cpu: "1"
-      memory: "1Gi"
+      memory: "2Gi"
 
 billing:
   image:

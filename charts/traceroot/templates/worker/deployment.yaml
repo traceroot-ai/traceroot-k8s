@@ -70,7 +70,24 @@ spec:
               value: {{ .Values.worker.pollIntervalSeconds | quote }}
             - name: BATCH_SIZE
               value: {{ .Values.worker.batchSize | quote }}
-            {{- with .Values.additionalEnv }}
+            {{- $legacyWorkerConcurrency := dict }}
+            {{- $workerAdditionalEnv := list }}
+            {{- range .Values.additionalEnv }}
+            {{- if eq (default "" .name) "WORKER_CONCURRENCY" }}
+            {{- if not (hasKey $legacyWorkerConcurrency "entry") }}
+            {{- $_ := set $legacyWorkerConcurrency "entry" . }}
+            {{- end }}
+            {{- else }}
+            {{- $workerAdditionalEnv = append $workerAdditionalEnv . }}
+            {{- end }}
+            {{- end }}
+            {{- if hasKey $legacyWorkerConcurrency "entry" }}
+            {{- toYaml (list (get $legacyWorkerConcurrency "entry")) | nindent 12 }}
+            {{- else }}
+            - name: WORKER_CONCURRENCY
+              value: {{ .Values.worker.concurrency | quote }}
+            {{- end }}
+            {{- with $workerAdditionalEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           resources:
