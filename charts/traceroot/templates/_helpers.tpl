@@ -140,7 +140,16 @@ here once, not typed per service.
 {{- if or (contains "/" .Values.mcp.host) (contains ":" .Values.mcp.host) -}}
 {{- fail "mcp.host is a bare hostname, without a scheme, port or path" -}}
 {{- end -}}
-{{- if not (hasPrefix "https://" .Values.betterAuth.url) -}}
+{{- /* A DNS hostname: lowercase labels of at most 63 characters, at least two of them, 253 in all. */ -}}
+{{- if or (gt (len .Values.mcp.host) 253) (not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" .Values.mcp.host)) -}}
+{{- fail "mcp.host is a bare hostname, without a scheme, port or path" -}}
+{{- end -}}
+{{- /* Its own hostname: the MCP rule is listed first and takes "/" for its host. */ -}}
+{{- if eq .Values.mcp.host .Values.ingress.host -}}
+{{- fail "mcp.host must differ from ingress.host: the MCP server takes every path on its hostname" -}}
+{{- end -}}
+{{- $auth := urlParse (.Values.betterAuth.url | default "") -}}
+{{- if or (ne $auth.scheme "https") (not $auth.host) $auth.query $auth.fragment -}}
 {{- fail "mcp.enabled needs betterAuth.url, the web app's public https URL (the OAuth issuer is derived from it)" -}}
 {{- end -}}
 {{- end -}}

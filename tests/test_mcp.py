@@ -74,6 +74,46 @@ def test_the_mcp_hostname_routes_to_the_mcp_service_ahead_of_the_app():
              "--set", "betterAuth.url=https://app.example.com"),
             "bare hostname",
         ),
+        (
+            ("--set", "mcp.enabled=true", "--set", "mcp.host=mcp.example.com:8443",
+             "--set", "betterAuth.url=https://app.example.com"),
+            "bare hostname",
+        ),
+        (
+            ("--set", "mcp.enabled=true", "--set", "mcp.host=MCP.example.com",
+             "--set", "betterAuth.url=https://app.example.com"),
+            "bare hostname",
+        ),
+        (
+            ("--set", "mcp.enabled=true", "--set", "mcp.host=mcp.example.com?x=1",
+             "--set", "betterAuth.url=https://app.example.com"),
+            "bare hostname",
+        ),
+        (
+            ("--set", "mcp.enabled=true", "--set", f"mcp.host={'a' * 64}.example.com",
+             "--set", "betterAuth.url=https://app.example.com"),
+            "bare hostname",
+        ),
+        (
+            ("--set", "mcp.enabled=true", "--set", "mcp.host=app.example.com",
+             "--set", "ingress.host=app.example.com", "--set", "betterAuth.url=https://app.example.com"),
+            "must differ from ingress.host",
+        ),
+        (
+            ("--set", "mcp.enabled=true", "--set", "mcp.host=mcp.example.com",
+             "--set", "betterAuth.url=http://app.example.com"),
+            "needs betterAuth.url",
+        ),
+        (
+            ("--set", "mcp.enabled=true", "--set", "mcp.host=mcp.example.com",
+             "--set", "betterAuth.url=https://"),
+            "needs betterAuth.url",
+        ),
+        (
+            ("--set", "mcp.enabled=true", "--set", "mcp.host=mcp.example.com",
+             "--set", "betterAuth.url=https://app.example.com?x=1"),
+            "needs betterAuth.url",
+        ),
     ],
 )  # fmt: skip
 def test_an_incomplete_mcp_configuration_fails_the_render(extra, message):
