@@ -33,8 +33,9 @@ spec:
             # A tool call is the caller's credential passed to the public API.
             - name: BACKEND_INTERNAL_URL
               value: "http://{{ include "traceroot.fullname" . }}-rest:{{ .Values.rest.port }}"
-            # Read at startup: the server refuses to start unless the web app's
-            # OAuth issuer is MCP_OAUTH_ISSUER exactly.
+            # Read at startup: the server exits if the web app answers with an
+            # OAuth issuer other than MCP_OAUTH_ISSUER, and serves (logging a
+            # line) if the web app can't be reached yet.
             - name: TRACEROOT_UI_URL
               value: "http://{{ include "traceroot.fullname" . }}-web:{{ .Values.web.port }}"
             - name: MCP_ALLOWED_HOSTS
