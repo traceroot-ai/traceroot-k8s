@@ -37,6 +37,28 @@ spec:
                   key: {{ .Values.secrets.keys.internalApiSecret }}
             - name: USAGE_METERING_CRON
               value: {{ .Values.billing.usageMeteringCron | quote }}
+            # Self-host (enableBilling=false) stops the billing job from setting the
+            # Free-plan caps, and clears ones it set; read by isBillingEnabled().
+            - name: ENABLE_BILLING
+              value: {{ .Values.enableBilling | quote }}
+            # Public app URL for the links in the usage emails, as web and detector get it.
+            - name: NEXT_PUBLIC_APP_URL
+              value: {{ .Values.betterAuth.url | quote }}
+            # --- SMTP (conditional) ---
+            {{- if .Values.smtp }}
+            {{- if .Values.smtp.existingSecret }}
+            - name: TRACEROOT_SMTP_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.smtp.existingSecret }}
+                  key: {{ .Values.smtp.keys.url }}
+            - name: TRACEROOT_SMTP_MAIL_FROM
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.smtp.existingSecret }}
+                  key: {{ .Values.smtp.keys.mailFrom }}
+            {{- end }}
+            {{- end }}
             # --- Stripe (conditional) ---
             {{- if .Values.stripe }}
             {{- if .Values.stripe.existingSecret }}
